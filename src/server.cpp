@@ -53,8 +53,16 @@ int tls_init(const char* cert, const char* key) {
     SSL_CTX_set_options(g_ssl_ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
     
     if (cert && key && access(cert, R_OK) == 0) {
-        if (SSL_CTX_use_certificate_file(g_ssl_ctx, cert, SSL_FILETYPE_PEM) <= 0) return -1;
-        if (SSL_CTX_use_PrivateKey_file(g_ssl_ctx, key, SSL_FILETYPE_PEM) <= 0) return -1;
+        if (SSL_CTX_use_certificate_file(g_ssl_ctx, cert, SSL_FILETYPE_PEM) <= 0) {
+            SSL_CTX_free(g_ssl_ctx);
+            g_ssl_ctx = NULL;
+            return -1;
+        }
+        if (SSL_CTX_use_PrivateKey_file(g_ssl_ctx, key, SSL_FILETYPE_PEM) <= 0) {
+            SSL_CTX_free(g_ssl_ctx);
+            g_ssl_ctx = NULL;
+            return -1;
+        }
     }
     
     return 0;
@@ -95,6 +103,16 @@ void* session_thread(void* arg) {
     fd_set fds;
     struct timeval tv;
     int maxfd = (s->client_fd > s->target_fd ? s->client_fd : s->target_fd) + 1;
+    
+    // Check for FD_SETSIZE overflow
+    if (s->client_fd >= FD_SETSIZE || s->target_fd >= FD_SETSIZE) {
+        spf_log(SPF_LOG_ERROR, "fd >= FD_SETSIZE, cannot use select");
+        close(s->client_fd);
+        close(s->target_fd);
+        spf_lb_conn_end(s->rule, s->backend_idx);
+        free(s);
+        return NULL;
+    }
     
     uint64_t bytes_in = 0, bytes_out = 0;
     
@@ -164,7 +182,9 @@ void* session_thread(void* arg) {
         g_state.connections[s->conn_idx].bytes_in = bytes_in;
         g_state.connections[s->conn_idx].bytes_out = bytes_out;
     }
-    g_state.active_conns--;
+    if (g_state.active_conns > 0) {
+        g_state.active_conns--;
+    }
     pthread_mutex_unlock(&g_state.stats_lock);
     
     free(s);
@@ -557,11 +577,15 @@ void handle_ctrl(int fd) {
             }
         }
         else if (strncmp(buf, "BLOCK ", 6) == 0) {
-            char ip[64];
+            char ip[64] = {0};
             uint64_t dur = 3600;
-            sscanf(buf + 6, "%63s %lu", ip, &dur);
-            spf_block_ip(&g_state, ip, dur);
-            snprintf(resp, sizeof(resp), "OK blocked %s for %lu sec\n", ip, dur);
+            int parsed = sscanf(buf + 6, "%63s %lu", ip, &dur);
+            if (parsed >= 1 && ip[0] != '\0') {
+                spf_block_ip(&g_state, ip, dur);
+                snprintf(resp, sizeof(resp), "OK blocked %s for %lu sec\n", ip, dur);
+            } else {
+                snprintf(resp, sizeof(resp), "ERR usage: BLOCK <ip> [seconds]\n");
+            }
         }
         else if (strncmp(buf, "UNBLOCK ", 8) == 0) {
             char ip[64];

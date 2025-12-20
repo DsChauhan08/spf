@@ -36,6 +36,12 @@ static int health_tcp_check(const char* host, uint16_t port, int timeout_ms) {
         return -1;
     }
     
+    // Check FD_SETSIZE limit
+    if (fd >= FD_SETSIZE) {
+        close(fd);
+        return -1;
+    }
+    
     fd_set wfds;
     FD_ZERO(&wfds);
     FD_SET(fd, &wfds);
@@ -83,12 +89,13 @@ void health_check_backend(spf_state_t* state, spf_rule_t* rule, uint8_t idx) {
         b->health_fails = 0;
     } else {
         b->health_fails++;
-        if (b->health_fails >= HEALTH_FAIL_THRESHOLD && b->state == SPF_BACKEND_UP) {
+        uint8_t fails = b->health_fails;
+        if (fails >= HEALTH_FAIL_THRESHOLD && b->state == SPF_BACKEND_UP) {
             b->state = SPF_BACKEND_DOWN;
             pthread_mutex_unlock(&b->lock);
             
             spf_event_push(state, SPF_EVENT_HEALTH_DOWN, b->host, b->port, rule->id, "failed");
-            spf_log(SPF_LOG_WARN, "health: %s:%u DOWN (fails=%u)", b->host, b->port, b->health_fails);
+            spf_log(SPF_LOG_WARN, "health: %s:%u DOWN (fails=%u)", b->host, b->port, fails);
             return;
         }
     }

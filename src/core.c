@@ -333,13 +333,17 @@ void spf_bucket_init(spf_bucket_t* tb, uint64_t rate, double burst) {
 
 uint64_t spf_bucket_consume(spf_bucket_t* tb, uint64_t want) {
     uint64_t now = spf_time_ms();
-    double dt = (now - tb->last_refill) / 1000.0;
     
-    if (dt > 0.0) {
+    // Handle time wraparound
+    if (now >= tb->last_refill) {
+        double dt = (now - tb->last_refill) / 1000.0;
         tb->tokens += tb->rate * dt;
         if (tb->tokens > (double)tb->capacity) {
             tb->tokens = (double)tb->capacity;
         }
+        tb->last_refill = now;
+    } else {
+        // Time wrapped around, reset
         tb->last_refill = now;
     }
     
@@ -355,15 +359,26 @@ uint64_t spf_bucket_consume(spf_bucket_t* tb, uint64_t want) {
 
 void spf_event_push(spf_state_t* state, spf_event_type_t type, const char* ip, 
                     uint16_t port, uint32_t rule_id, const char* details) {
+    bool should_alert = false;
+    char webhook_url[256] = {0};
+    spf_event_t event_copy;
+    
     pthread_mutex_lock(&state->events.lock);
     
     spf_event_t* e = &state->events.events[state->events.head];
+    memset(e, 0, sizeof(spf_event_t));
     e->type = type;
     e->timestamp = spf_time_sec();
-    if (ip) strncpy(e->src_ip, ip, SPF_IP_MAX_LEN - 1);
+    if (ip) {
+        strncpy(e->src_ip, ip, SPF_IP_MAX_LEN - 1);
+        e->src_ip[SPF_IP_MAX_LEN - 1] = '\0';
+    }
     e->src_port = port;
     e->rule_id = rule_id;
-    if (details) strncpy(e->details, details, sizeof(e->details) - 1);
+    if (details) {
+        strncpy(e->details, details, sizeof(e->details) - 1);
+        e->details[sizeof(e->details) - 1] = '\0';
+    }
     
     state->events.head = (state->events.head + 1) % SPF_MAX_EVENTS;
     if (state->events.count < SPF_MAX_EVENTS) {
@@ -372,10 +387,17 @@ void spf_event_push(spf_state_t* state, spf_event_type_t type, const char* ip,
         state->events.tail = (state->events.tail + 1) % SPF_MAX_EVENTS;
     }
     
+    // Copy for webhook before unlock
+    if (state->config.security.webhook_url[0] && type >= SPF_EVENT_BLOCKED) {
+        should_alert = true;
+        strncpy(webhook_url, state->config.security.webhook_url, sizeof(webhook_url) - 1);
+        memcpy(&event_copy, e, sizeof(event_copy));
+    }
+    
     pthread_mutex_unlock(&state->events.lock);
     
-    if (state->config.security.webhook_url[0] && type >= SPF_EVENT_BLOCKED) {
-        spf_webhook_alert(state->config.security.webhook_url, e);
+    if (should_alert) {
+        spf_webhook_alert(webhook_url, &event_copy);
     }
 }
 
@@ -409,14 +431,22 @@ bool spf_verify_token(spf_state_t* state, const char* token) {
 }
 
 void spf_generate_token(char* buf, size_t len) {
+    if (len < 2) {
+        if (len == 1) buf[0] = '\0';
+        return;
+    }
+    
     static const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     uint8_t rnd[128];
-    spf_random_bytes(rnd, len - 1);
+    size_t token_len = len - 1;
+    if (token_len > 127) token_len = 127;
     
-    for (size_t i = 0; i < len - 1; i++) {
+    spf_random_bytes(rnd, token_len);
+    
+    for (size_t i = 0; i < token_len; i++) {
         buf[i] = charset[rnd[i] % (sizeof(charset) - 1)];
     }
-    buf[len - 1] = '\0';
+    buf[token_len] = '\0';
 }
 
 int spf_lb_select_backend(spf_rule_t* rule, const char* client_ip) {
@@ -531,6 +561,8 @@ void spf_lb_conn_end(spf_rule_t* rule, uint8_t backend_idx) {
 }
 
 bool spf_blocklist_contains(spf_blocklist_t* bl, const char* ip) {
+    if (!bl->ips || bl->count == 0) return false;
+    
     struct in_addr addr;
     if (inet_pton(AF_INET, ip, &addr) != 1) return false;
     
@@ -538,9 +570,14 @@ bool spf_blocklist_contains(spf_blocklist_t* bl, const char* ip) {
     
     pthread_rwlock_rdlock(&bl->lock);
     
-    int lo = 0, hi = bl->count - 1;
+    if (bl->count == 0) {
+        pthread_rwlock_unlock(&bl->lock);
+        return false;
+    }
+    
+    int lo = 0, hi = (int)bl->count - 1;
     while (lo <= hi) {
-        int mid = (lo + hi) / 2;
+        int mid = lo + (hi - lo) / 2;
         if (bl->ips[mid] == ip_val) {
             pthread_rwlock_unlock(&bl->lock);
             return true;

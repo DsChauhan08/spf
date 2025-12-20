@@ -74,7 +74,11 @@ int metrics_format(spf_state_t* state, char* buf, size_t len) {
 
 static void handle_metrics_request(int fd, spf_state_t* state) {
     char req[1024];
-    recv(fd, req, sizeof(req), 0);
+    ssize_t n = recv(fd, req, sizeof(req), 0);
+    if (n <= 0) {
+        close(fd);
+        return;
+    }
     
     char body[8192];
     int body_len = metrics_format(state, body, sizeof(body));
@@ -116,6 +120,12 @@ static void* metrics_worker(void* arg) {
     spf_log(SPF_LOG_INFO, "metrics: listening on :%u", state->config.metrics.port);
     
     while (g_metrics_running && state->running) {
+        // Check FD_SETSIZE limit
+        if (g_metrics_fd >= FD_SETSIZE) {
+            spf_log(SPF_LOG_ERROR, "metrics: fd >= FD_SETSIZE");
+            break;
+        }
+        
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(g_metrics_fd, &fds);

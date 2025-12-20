@@ -5,9 +5,11 @@
 #include <ctype.h>
 
 static char* trim(char* s) {
-    while (isspace(*s)) s++;
-    char* e = s + strlen(s) - 1;
-    while (e > s && isspace(*e)) *e-- = '\0';
+    while (isspace((unsigned char)*s)) s++;
+    size_t len = strlen(s);
+    if (len == 0) return s;
+    char* e = s + len - 1;
+    while (e > s && isspace((unsigned char)*e)) *e-- = '\0';
     return s;
 }
 
@@ -18,6 +20,7 @@ static int parse_backend(const char* str, spf_backend_t* b) {
     
     if (sscanf(str, "%45[^:]:%hu:%hu", host, &port, &weight) >= 2) {
         strncpy(b->host, host, SPF_IP_MAX_LEN - 1);
+        b->host[SPF_IP_MAX_LEN - 1] = '\0';
         b->port = port;
         b->weight = weight ? weight : 1;
         b->state = SPF_BACKEND_UP;
@@ -34,6 +37,7 @@ int config_load(spf_state_t* state, const char* path) {
     }
     
     strncpy(state->config.config_path, path, SPF_PATH_MAX - 1);
+    state->config.config_path[SPF_PATH_MAX - 1] = '\0';
     
     char line[512];
     char section[32] = "";
@@ -48,6 +52,7 @@ int config_load(spf_state_t* state, const char* path) {
             if (e) {
                 *e = '\0';
                 strncpy(section, s + 1, sizeof(section) - 1);
+                section[sizeof(section) - 1] = '\0';
             }
             continue;
         }
@@ -61,6 +66,7 @@ int config_load(spf_state_t* state, const char* path) {
         if (strcmp(section, "admin") == 0) {
             if (strcmp(key, "bind") == 0) {
                 strncpy(state->config.admin.bind_addr, val, SPF_IP_MAX_LEN - 1);
+                state->config.admin.bind_addr[SPF_IP_MAX_LEN - 1] = '\0';
             } else if (strcmp(key, "port") == 0) {
                 state->config.admin.port = atoi(val);
             } else if (strcmp(key, "token") == 0) {

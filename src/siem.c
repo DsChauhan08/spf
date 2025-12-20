@@ -27,6 +27,9 @@ void siem_init(spf_state_t* state) {
 
 void siem_push(spf_state_t* state, spf_event_type_t type, const char* ip, 
                uint16_t port, uint32_t rule_id, const char* details) {
+    spf_event_t event_copy;
+    bool should_alert = false;
+    
     pthread_mutex_lock(&state->events.lock);
     
     spf_event_t* e = &state->events.events[state->events.head];
@@ -34,10 +37,16 @@ void siem_push(spf_state_t* state, spf_event_type_t type, const char* ip,
     
     e->type = type;
     e->timestamp = spf_time_sec();
-    if (ip) strncpy(e->src_ip, ip, SPF_IP_MAX_LEN - 1);
+    if (ip) {
+        strncpy(e->src_ip, ip, SPF_IP_MAX_LEN - 1);
+        e->src_ip[SPF_IP_MAX_LEN - 1] = '\0';
+    }
     e->src_port = port;
     e->rule_id = rule_id;
-    if (details) strncpy(e->details, details, sizeof(e->details) - 1);
+    if (details) {
+        strncpy(e->details, details, sizeof(e->details) - 1);
+        e->details[sizeof(e->details) - 1] = '\0';
+    }
     
     state->events.head = (state->events.head + 1) % SPF_MAX_EVENTS;
     if (state->events.count < SPF_MAX_EVENTS) {
@@ -46,10 +55,16 @@ void siem_push(spf_state_t* state, spf_event_type_t type, const char* ip,
         state->events.tail = (state->events.tail + 1) % SPF_MAX_EVENTS;
     }
     
+    // Copy event before unlock for alert
+    if (type >= SPF_EVENT_BLOCKED) {
+        memcpy(&event_copy, e, sizeof(event_copy));
+        should_alert = true;
+    }
+    
     pthread_mutex_unlock(&state->events.lock);
     
-    if (type >= SPF_EVENT_BLOCKED) {
-        siem_alert(state, e);
+    if (should_alert) {
+        siem_alert(state, &event_copy);
     }
 }
 
@@ -81,9 +96,15 @@ int siem_format_json(const spf_event_t* e, char* buf, size_t len) {
 
 int siem_format_syslog(const spf_event_t* e, char* buf, size_t len) {
     time_t t = e->timestamp;
-    struct tm* tm = localtime(&t);
+    struct tm tm_buf;
+    struct tm* tm = localtime_r(&t, &tm_buf);
     char ts[32];
-    strftime(ts, sizeof(ts), "%b %d %H:%M:%S", tm);
+    
+    if (tm) {
+        strftime(ts, sizeof(ts), "%b %d %H:%M:%S", tm);
+    } else {
+        snprintf(ts, sizeof(ts), "(time error)");
+    }
     
     return snprintf(buf, len,
         "<%d>%s spf[%d]: %s src=%s:%u rule=%u %s",
