@@ -123,7 +123,7 @@ AUTH <token>              # authenticate first
 STATUS                    # system overview  
 RULES                     # list all rules
 BACKENDS <id>             # show backends for rule
-ADD <port> <backends> [algo]  # add forwarding rule
+ADD <port> <backends> [algo] [max_conns] [accept_rate]  # add forwarding rule (accept_rate = connections/sec)
 DEL <id>                  # delete rule
 BLOCK <ip> [seconds]      # block IP
 UNBLOCK <ip>              # unblock IP  
@@ -137,6 +137,9 @@ QUIT                      # close connection
 ```bash
 # add rule with 3 backends, round-robin
 ADD 443 10.0.0.1:8080,10.0.0.2:8080,10.0.0.3:8080 rr
+
+# add rule with conn cap 512 and 150 cps accept throttle
+ADD 8443 10.0.0.10:8443 rr 512 150
 
 # add rule with least-connections
 ADD 80 web1:8080,web2:8080 lc
@@ -168,6 +171,23 @@ BLOCK 1.2.3.4 3600
 | Least Connections | `lc` | Route to least busy backend |
 | IP Hash | `ip` | Sticky sessions by client IP |
 | Weighted | `w` | Weighted distribution |
+
+### Per-Rule Safety Limits
+
+- `max_conns` (optional): maximum concurrent connections for the rule (default 512). Extra accepts are dropped and reported as `RATE_LIMITED`.
+- `accept_rate` (optional): allowed new connections per second for the rule (default 200 or `security.rate_global` if set). Enforced via token bucket at accept time.
+
+These can be set via the `ADD` command or config keys:
+
+```
+[rule.10001]
+listen = 8080
+lb = rr
+max_conns = 512
+accept_rate = 150
+backend = 10.0.0.1:80:1
+backend = 10.0.0.2:80:1
+```
 
 ## Security Events
 

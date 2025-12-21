@@ -103,7 +103,7 @@ void health_check_backend(spf_state_t* state, spf_rule_t* rule, uint8_t idx) {
     pthread_mutex_unlock(&b->lock);
 }
 
-void* health_worker(void* arg) {
+void* spf_health_worker(void* arg) {
     spf_rule_t* rule = (spf_rule_t*)arg;
     
     spf_state_t* state = &g_state;
@@ -125,7 +125,7 @@ void* health_worker(void* arg) {
 }
 
 int health_start(spf_rule_t* rule) {
-    return pthread_create(&rule->health_thread, NULL, health_worker, rule);
+    return pthread_create(&rule->health_thread, NULL, spf_health_worker, rule);
 }
 
 void health_stop(spf_rule_t* rule) {

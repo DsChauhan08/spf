@@ -105,7 +105,8 @@ int spf_load_config(spf_state_t* state, const char* path) {
         }
         else if (strncmp(section, "rule.", 5) == 0) {
             if (strcmp(key, "listen") == 0) {
-                spf_rule_t rule = {0};
+                spf_rule_t rule;
+                memset(&rule, 0, sizeof(rule));
                 uint8_t rnd[4];
                 spf_random_bytes(rnd, 4);
                 uint32_t r;
@@ -115,6 +116,11 @@ int spf_load_config(spf_state_t* state, const char* path) {
                 rule.enabled = true;
                 rule.active = true;
                 rule.rate_bps = 100 * 1024 * 1024;
+                rule.max_conns = 512; // default per-rule cap tuned for mid-tier host
+                rule.accept_rate = state->config.security.rate_global ? state->config.security.rate_global : 200;
+                if (rule.accept_rate) {
+                    spf_bucket_init(&rule.accept_bucket, rule.accept_rate, 2.0);
+                }
                 
                 pthread_mutex_lock(&state->lock);
                 for (int i = 0; i < SPF_MAX_RULES; i++) {
@@ -144,6 +150,15 @@ int spf_load_config(spf_state_t* state, const char* path) {
                 else if (strcmp(val, "lc") == 0) current_rule->lb_algo = SPF_LB_LEASTCONN;
                 else if (strcmp(val, "ip") == 0) current_rule->lb_algo = SPF_LB_IPHASH;
                 else if (strcmp(val, "w") == 0) current_rule->lb_algo = SPF_LB_WEIGHTED;
+            }
+            else if (strcmp(key, "max_conns") == 0 && current_rule) {
+                current_rule->max_conns = (uint32_t)atoi(val);
+            }
+            else if (strcmp(key, "accept_rate") == 0 && current_rule) {
+                current_rule->accept_rate = (uint32_t)atoi(val);
+                if (current_rule->accept_rate) {
+                    spf_bucket_init(&current_rule->accept_bucket, current_rule->accept_rate, 2.0);
+                }
             }
             else if (strcmp(key, "tls") == 0 && current_rule) {
                 current_rule->tls_terminate = strcmp(val, "true") == 0;
@@ -202,6 +217,13 @@ int config_save(spf_state_t* state, const char* path) {
             else if (r->lb_algo == SPF_LB_IPHASH) lb = "ip";
             else if (r->lb_algo == SPF_LB_WEIGHTED) lb = "w";
             fprintf(f, "lb = %s\n", lb);
+
+            if (r->max_conns) {
+                fprintf(f, "max_conns = %u\n", r->max_conns);
+            }
+            if (r->accept_rate) {
+                fprintf(f, "accept_rate = %u\n", r->accept_rate);
+            }
             
             for (int j = 0; j < r->backend_count; j++) {
                 fprintf(f, "backend = %s:%u:%u\n", 

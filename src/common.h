@@ -101,6 +101,13 @@ typedef struct {
 } spf_backend_t;
 
 typedef struct {
+    uint64_t rate;
+    uint64_t capacity;
+    double tokens;
+    uint64_t last_refill;
+} spf_bucket_t;
+
+typedef struct {
     uint32_t id;
     char name[64];
     uint16_t listen_port;
@@ -113,6 +120,9 @@ typedef struct {
     uint32_t rr_index;
     uint64_t rate_bps;
     uint32_t max_conns;
+    uint32_t accept_rate;      // connections per second limit (0 = unlimited)
+    spf_bucket_t accept_bucket; // token bucket for accept throttling
+    uint32_t active_conns;     // current active connections for this rule
     pthread_t listen_thread;
     pthread_t health_thread;
     pthread_mutex_t lock;
@@ -142,13 +152,6 @@ typedef struct {
     uint64_t bytes_total;
     uint32_t conns_total;
 } spf_tracker_t;
-
-typedef struct {
-    uint64_t rate;
-    uint64_t capacity;
-    double tokens;
-    uint64_t last_refill;
-} spf_bucket_t;
 
 typedef struct {
     spf_event_type_t type;

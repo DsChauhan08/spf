@@ -138,7 +138,10 @@ int siem_export_logs(spf_state_t* state, int fd, uint32_t count) {
     for (uint32_t i = 0; i < actual; i++) {
         int len = siem_format_json(&events[i], line, sizeof(line) - 1);
         line[len++] = '\n';
-        write(fd, line, len);
+        ssize_t wrote = write(fd, line, len);
+        if (wrote != (ssize_t)len) {
+            return -1;
+        }
     }
     
     return actual;

@@ -160,59 +160,16 @@ void* session_thread(void* arg) {
         g_state.active_conns--;
     }
     pthread_mutex_unlock(&g_state.stats_lock);
-    
-    free(s);
-    return NULL;
-}
 
-void* health_worker(void* arg) {
-    spf_rule_t* rule = (spf_rule_t*)arg;
-    
-    while (!g_shutdown && g_state.running && rule->active) {
-        for (int i = 0; i < rule->backend_count; i++) {
-            spf_backend_t* b = &rule->backends[i];
-            if (b->state == SPF_BACKEND_DRAIN) continue;
-            
-            int fd = socket(AF_INET, SOCK_STREAM, 0);
-            if (fd < 0) continue;
-            
-            struct timeval tv;
-            tv.tv_sec = 2;
-            tv.tv_usec = 0;
-            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-            
-            struct sockaddr_in addr = {0};
-            addr.sin_family = AF_INET;
-            addr.sin_port = htons(b->port);
-            inet_pton(AF_INET, b->host, &addr.sin_addr);
-            
-            int ok = connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0;
-            close(fd);
-            
-            pthread_mutex_lock(&b->lock);
-            if (ok) {
-                if (b->state == SPF_BACKEND_DOWN) {
-                    b->state = SPF_BACKEND_UP;
-                    spf_event_push(&g_state, SPF_EVENT_HEALTH_UP, b->host, b->port, rule->id, "backend recovered");
-                    spf_log(SPF_LOG_INFO, "backend %s:%u up", b->host, b->port);
-                }
-                b->health_fails = 0;
-            } else {
-                b->health_fails++;
-                if (b->health_fails >= 3 && b->state == SPF_BACKEND_UP) {
-                    b->state = SPF_BACKEND_DOWN;
-                    spf_event_push(&g_state, SPF_EVENT_HEALTH_DOWN, b->host, b->port, rule->id, "health check failed");
-                    spf_log(SPF_LOG_WARN, "backend %s:%u down", b->host, b->port);
-                }
-            }
-            b->last_health_check = spf_time_sec();
-            pthread_mutex_unlock(&b->lock);
+    if (s->rule) {
+        pthread_mutex_lock(&s->rule->lock);
+        if (s->rule->active_conns > 0) {
+            s->rule->active_conns--;
         }
-        
-        sleep(SPF_HEALTH_INTERVAL_MS / 1000);
+        pthread_mutex_unlock(&s->rule->lock);
     }
     
+    free(s);
     return NULL;
 }
 
@@ -225,7 +182,8 @@ void* listener_thread(void* arg) {
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
-    struct sockaddr_in addr = {0};
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(rule->listen_port);
@@ -239,7 +197,7 @@ void* listener_thread(void* arg) {
     listen(fd, 256);
     spf_log(SPF_LOG_INFO, "rule %u listening on :%u", rule->id, rule->listen_port);
     
-    pthread_create(&rule->health_thread, NULL, health_worker, rule);
+    pthread_create(&rule->health_thread, NULL, spf_health_worker, rule);
     pthread_detach(rule->health_thread);
     
     while (!g_shutdown && g_state.running && rule->active) {
@@ -254,6 +212,15 @@ void* listener_thread(void* arg) {
         socklen_t cli_len = sizeof(cli_addr);
         int cli_fd = accept(fd, (struct sockaddr*)&cli_addr, &cli_len);
         if (cli_fd < 0) continue;
+
+        pthread_mutex_lock(&g_state.stats_lock);
+        bool at_capacity = g_state.active_conns >= (SPF_MAX_CONNECTIONS - 1);
+        pthread_mutex_unlock(&g_state.stats_lock);
+        if (at_capacity) {
+            spf_log(SPF_LOG_WARN, "dropping connection: at capacity (%u active)", g_state.active_conns);
+            close(cli_fd);
+            continue;
+        }
         
         // Fix DoS: Set timeouts immediately to prevent slow handshake hanging the listener
         struct timeval tv_cli = {10, 0}; // 10s timeout
@@ -262,14 +229,48 @@ void* listener_thread(void* arg) {
         
         char cli_ip[SPF_IP_MAX_LEN];
         inet_ntop(AF_INET, &cli_addr.sin_addr, cli_ip, sizeof(cli_ip));
+
+        bool rule_limit_hit = false;
+        pthread_mutex_lock(&rule->lock);
+        if (rule->max_conns && rule->active_conns >= rule->max_conns) {
+            rule_limit_hit = true;
+        } else if (rule->accept_rate) {
+            uint64_t allowed = spf_bucket_consume(&rule->accept_bucket, 1);
+            if (allowed == 0) {
+                rule_limit_hit = true;
+            }
+        }
+        if (!rule_limit_hit) {
+            rule->active_conns++;
+        }
+        pthread_mutex_unlock(&rule->lock);
+
+        bool rule_counted = !rule_limit_hit;
+        if (rule_limit_hit) {
+            spf_event_push(&g_state, SPF_EVENT_RATE_LIMITED, cli_ip, ntohs(cli_addr.sin_port), rule->id, "rule limit");
+            close(cli_fd);
+            continue;
+        }
         
         if (g_state.config.security.enabled) {
             if (spf_is_blocked(&g_state, cli_ip)) {
+                if (rule_counted) {
+                    pthread_mutex_lock(&rule->lock);
+                    if (rule->active_conns > 0) rule->active_conns--;
+                    pthread_mutex_unlock(&rule->lock);
+                    rule_counted = false;
+                }
                 close(cli_fd);
                 continue;
             }
             
             if (!spf_register_attempt(&g_state, cli_ip)) {
+                if (rule_counted) {
+                    pthread_mutex_lock(&rule->lock);
+                    if (rule->active_conns > 0) rule->active_conns--;
+                    pthread_mutex_unlock(&rule->lock);
+                    rule_counted = false;
+                }
                 close(cli_fd);
                 continue;
             }
@@ -277,6 +278,12 @@ void* listener_thread(void* arg) {
         
         if (g_state.config.security.enabled && spf_geoip_is_blocked(&g_state, cli_ip)) {
             spf_event_push(&g_state, SPF_EVENT_GEOBLOCK, cli_ip, ntohs(cli_addr.sin_port), rule->id, "geo blocked");
+            if (rule_counted) {
+                pthread_mutex_lock(&rule->lock);
+                if (rule->active_conns > 0) rule->active_conns--;
+                pthread_mutex_unlock(&rule->lock);
+                rule_counted = false;
+            }
             close(cli_fd);
             continue;
         }
@@ -284,6 +291,12 @@ void* listener_thread(void* arg) {
         int backend_idx = spf_lb_select_backend(rule, cli_ip);
         if (backend_idx < 0) {
             spf_log(SPF_LOG_WARN, "no healthy backend for rule %u", rule->id);
+            if (rule_counted) {
+                pthread_mutex_lock(&rule->lock);
+                if (rule->active_conns > 0) rule->active_conns--;
+                pthread_mutex_unlock(&rule->lock);
+                rule_counted = false;
+            }
             close(cli_fd);
             continue;
         }
@@ -292,11 +305,18 @@ void* listener_thread(void* arg) {
         
         int tgt_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (tgt_fd < 0) {
+            if (rule_counted) {
+                pthread_mutex_lock(&rule->lock);
+                if (rule->active_conns > 0) rule->active_conns--;
+                pthread_mutex_unlock(&rule->lock);
+                rule_counted = false;
+            }
             close(cli_fd);
             continue;
         }
         
-        struct sockaddr_in tgt_addr = {0};
+        struct sockaddr_in tgt_addr;
+        memset(&tgt_addr, 0, sizeof(tgt_addr));
         tgt_addr.sin_family = AF_INET;
         tgt_addr.sin_port = htons(b->port);
         inet_pton(AF_INET, b->host, &tgt_addr.sin_addr);
@@ -308,6 +328,12 @@ void* listener_thread(void* arg) {
         if (connect(tgt_fd, (struct sockaddr*)&tgt_addr, sizeof(tgt_addr)) < 0) {
             close(tgt_fd);
             close(cli_fd);
+            if (rule_counted) {
+                pthread_mutex_lock(&rule->lock);
+                if (rule->active_conns > 0) rule->active_conns--;
+                pthread_mutex_unlock(&rule->lock);
+                rule_counted = false;
+            }
             continue;
         }
         
@@ -327,6 +353,12 @@ void* listener_thread(void* arg) {
             pthread_mutex_unlock(&g_state.stats_lock);
             close(tgt_fd);
             close(cli_fd);
+            if (rule_counted) {
+                pthread_mutex_lock(&rule->lock);
+                if (rule->active_conns > 0) rule->active_conns--;
+                pthread_mutex_unlock(&rule->lock);
+                rule_counted = false;
+            }
             continue;
         }
         
@@ -349,6 +381,12 @@ void* listener_thread(void* arg) {
             close(cli_fd);
             close(tgt_fd);
             spf_lb_conn_end(rule, backend_idx);
+            if (rule_counted) {
+                pthread_mutex_lock(&rule->lock);
+                if (rule->active_conns > 0) rule->active_conns--;
+                pthread_mutex_unlock(&rule->lock);
+                rule_counted = false;
+            }
             continue;
         }
         
@@ -367,6 +405,12 @@ void* listener_thread(void* arg) {
                 close(cli_fd);
                 close(tgt_fd);
                 spf_lb_conn_end(rule, backend_idx);
+                if (rule_counted) {
+                    pthread_mutex_lock(&rule->lock);
+                    if (rule->active_conns > 0) rule->active_conns--;
+                    pthread_mutex_unlock(&rule->lock);
+                    rule_counted = false;
+                }
                 free(sess);
                 continue;
             }
@@ -430,7 +474,7 @@ void handle_ctrl(int fd) {
                 "  STATUS             - system stats\n"
                 "  RULES              - list rules\n"
                 "  BACKENDS <id>      - show backends\n"
-                "  ADD <port> <ip:port> [algo] - add rule\n"
+                "  ADD <port> <ip:port> [algo] [max_conns] [accept_rate] - add rule\n"
                 "  DEL <id>           - delete rule\n"
                 "  BLOCK <ip> [sec]   - block ip\n"
                 "  UNBLOCK <ip>       - unblock ip\n"
@@ -492,19 +536,27 @@ void handle_ctrl(int fd) {
             }
         }
         else if (strncmp(buf, "ADD ", 4) == 0) {
-            int port;
-            char backend[64];
-            char algo[16] = "rr";
-            int parsed = sscanf(buf + 4, "%d %63s %15s", &port, backend, algo);
-            
-            if (parsed >= 2 && port > 0 && port < 65536) {
-                spf_rule_t rule = {0};
+                int port;
+                char backend[64];
+                char algo[16] = "rr";
+                int max_conns = 0;
+                int accept_rate = 0;
+                int parsed = sscanf(buf + 4, "%d %63s %15s %d %d", &port, backend, algo, &max_conns, &accept_rate);
+                
+                if (parsed >= 2 && port > 0 && port < 65536) {
+                    spf_rule_t rule;
+                    memset(&rule, 0, sizeof(rule));
                 uint8_t rnd[4];
                 spf_random_bytes(rnd, 4);
                 rule.id = (*(uint32_t*)rnd) % 90000 + 10000;
                 rule.listen_port = port;
                 rule.enabled = true;
                 rule.rate_bps = 100 * 1024 * 1024;
+                    rule.max_conns = max_conns > 0 ? (uint32_t)max_conns : 512;
+                    rule.accept_rate = accept_rate > 0 ? (uint32_t)accept_rate : (g_state.config.security.rate_global ? g_state.config.security.rate_global : 200);
+                    if (rule.accept_rate) {
+                        spf_bucket_init(&rule.accept_bucket, rule.accept_rate, 2.0);
+                    }
                 
                 if (strcmp(algo, "lc") == 0) rule.lb_algo = SPF_LB_LEASTCONN;
                 else if (strcmp(algo, "ip") == 0) rule.lb_algo = SPF_LB_IPHASH;
@@ -542,7 +594,7 @@ void handle_ctrl(int fd) {
                     snprintf(resp, sizeof(resp), "ERR bad backend format\n");
                 }
             } else {
-                snprintf(resp, sizeof(resp), "ERR usage: ADD <port> <host:port,...> [rr|lc|ip|w]\n");
+                    snprintf(resp, sizeof(resp), "ERR usage: ADD <port> <host:port,...> [rr|lc|ip|w] [max_conns] [accept_rate]\n");
             }
         }
         else if (strncmp(buf, "DEL ", 4) == 0) {
@@ -631,7 +683,8 @@ void* ctrl_thread(void* arg) {
     int opt = 1;
     setsockopt(g_ctrl_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     
-    struct sockaddr_in addr = {0};
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     inet_pton(AF_INET, g_state.config.admin.bind_addr, &addr.sin_addr);
     addr.sin_port = htons(g_state.config.admin.port);
@@ -673,7 +726,7 @@ void daemonize(void) {
     if (pid < 0) exit(1);
     if (pid > 0) exit(0);
     umask(0);
-    chdir("/");
+    if (chdir("/") != 0) exit(1);
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
@@ -758,6 +811,15 @@ int main(int argc, char** argv) {
             g_state.config.admin.tls_enabled = true;
             spf_log(SPF_LOG_INFO, "tls enabled");
         }
+    }
+
+    bool bind_is_loopback = strcmp(g_state.config.admin.bind_addr, "127.0.0.1") == 0 ||
+                            strcmp(g_state.config.admin.bind_addr, "::1") == 0;
+    if (!bind_is_loopback && g_state.config.admin.token[0] == '\0') {
+        spf_log(SPF_LOG_ERROR, "refusing to start: admin on %s:%u without auth token", 
+                g_state.config.admin.bind_addr, g_state.config.admin.port);
+        fprintf(stderr, "Set --token or configure admin.token when binding non-loopback.\n");
+        return 1;
     }
     
     signal(SIGINT, sig_handler);
