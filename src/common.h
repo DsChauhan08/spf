@@ -21,7 +21,7 @@
     #define SPF_PLATFORM_GENERIC
 #endif
 
-#define SPF_VERSION "2.0.0"
+#define SPF_VERSION "2.0.0-alpha.1"
 
 #define SPF_MAX_CONNECTIONS 4096
 #define SPF_MAX_RULES 128

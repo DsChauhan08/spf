@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev pkg-config
+
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew update
+          brew install openssl@3
+          OPENSSL_PREFIX=$(brew --prefix openssl@3)
+          echo "LDFLAGS=-L${OPENSSL_PREFIX}/lib" >> "$GITHUB_ENV"
+          echo "CPPFLAGS=-I${OPENSSL_PREFIX}/include" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=${OPENSSL_PREFIX}/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Build and test (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          make clean
+          make
+          ./bin/spf --help
+
+      - name: Build and test (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          make clean
+          make
+          otool -L bin/spf | tee /tmp/otool.txt
+          if ! grep -E "/libssl\\.|/libcrypto\\." /tmp/otool.txt; then
+            echo "Missing expected OpenSSL linkage" >&2
+            exit 1
+          fi
+          ./bin/spf --help
+
+      - name: Setup MSYS2 (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: msys2/setup-msys2@v2.22.0
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-g++
+            mingw-w64-x86_64-openssl
+            make
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: msys2 {0}
+        run: |
+          make clean
+          make cross-windows
+          test -f bin/spf.exe
+          ./bin/spf.exe --help
+
+      - name: Upload artifact (Unix)
+        if: matrix.os != 'windows-latest'
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          name: spf-${{ matrix.os }}
+          path: bin/spf
+
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4.3.3
+        with:
+          name: spf-${{ matrix.os }}
+          path: bin/spf.exe

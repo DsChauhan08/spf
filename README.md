@@ -272,6 +272,12 @@ make cross-windows
 make info
 ```
 
+## Alpha Releases & CI
+
+GitHub Actions now builds and smoke-tests SPF on Linux, macOS, and Windows. The **CI** workflow runs on pushes and pull requests to ensure each platform compiles and produces a runnable binary.
+
+To publish an alpha build, push a tag like `v2.0.0-alpha.1` or manually dispatch the **Release Alpha** workflow (optionally supplying a tag). It will build per-platform binaries (`spf-linux-amd64`, `spf-macos-arm64`, `spf-windows-amd64.exe`) and attach them to a prerelease on GitHub.
+
 ## License
 
 GPL-2.0
