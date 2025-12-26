@@ -2,7 +2,43 @@
 
 **Fast, secure, lightweight TCP/UDP proxy with enterprise security features.**
 
-**v2.1.0** - Beats rinetd, socat, and cloud LBs. Simple, powerful, extensible.
+**v2.1.0** - Beats rinetd, socat, Cloudflare Tunnel, and cloud LBs. Simple, powerful, extensible.
+
+Full detailed usage is now in [docs/guide.md](docs/guide.md). This README stays concise.
+
+## 🚀 Cloudflare Tunnel Alternative
+
+**Host your website from home without Cloudflare, without port forwarding, without a static IP.**
+
+```bash
+# On your $5 VPS (once):
+spf relay mysite.com
+
+# At home (that's it!):
+spf expose 3000 --relay mysite.com
+# -> Your local app is now at https://myapp.mysite.com
+```
+
+No more:
+- ❌ Cloudflare account required
+- ❌ Complex port forwarding
+- ❌ Begging ISP for static IP
+- ❌ Fighting with CGNAT
+- ❌ Paying monthly fees
+
+Just:
+- ✅ One $5 VPS with public IP
+- ✅ One command at home
+- ✅ Full control of your traffic
+
+```
+┌─────────────┐                              ┌─────────────┐
+│ Your Laptop │──── OUTBOUND connection ────▶│  Your VPS   │◀──── Internet Users
+│ (behind NAT)│     (works through NAT!)     │ (public IP) │
+└─────────────┘                              └─────────────┘
+```
+
+---
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────────┐
@@ -62,6 +98,8 @@ graph TB
 
 ### Core
 - **TCP Port Forwarding** - High-performance L4 proxy
+- **Tunnel Mode** - Expose home servers (Cloudflare Tunnel alternative!)
+- **Relay Mode** - Run your own tunnel server on VPS
 - **One-liner Mode** - `spf -f 8080:backend:80` (simpler than socat!)
 - **TLS Termination** - OpenSSL with TLS 1.2+
 - **Load Balancing** - Round-robin, least-conn, IP-hash, weighted
@@ -109,6 +147,81 @@ nc localhost 8081
 > ADD 8080 10.0.0.1:80,10.0.0.2:80 rr
 > STATUS
 ```
+
+## Expose Your Home Server (Cloudflare Alternative)
+
+The #1 use case: **Host a website from your home network without Cloudflare.**
+
+### The Problem
+
+You have a web app running on your laptop at `localhost:3000`. You want the world to access it at `https://myapp.mysite.com`. But:
+
+1. You're behind NAT (no public IP)
+2. Your ISP uses CGNAT (even worse)
+3. Port forwarding requires router access
+4. Your IP changes every day
+
+### The Solution: SPF Tunnel
+
+You need one cheap VPS ($5/month from DigitalOcean, Linode, Vultr, etc.) with a public IP.
+
+**Step 1: Set up relay on VPS (once)**
+
+```bash
+# SSH into your VPS
+ssh root@your-vps-ip
+
+# Install SPF
+wget https://github.com/yourusername/spf/releases/latest/download/spf
+chmod +x spf
+
+# Run relay (that's it!)
+./spf relay mysite.com
+
+# Optional: Add TLS with Let's Encrypt
+apt install certbot
+certbot certonly --standalone -d mysite.com
+./spf relay mysite.com --cert /etc/letsencrypt/live/mysite.com/fullchain.pem --key /etc/letsencrypt/live/mysite.com/privkey.pem
+```
+
+**Step 2: Expose your local app (at home)**
+
+```bash
+# Your app runs on localhost:3000
+./spf expose 3000 --relay mysite.com
+
+# Or with a custom subdomain
+./spf expose 3000 --relay mysite.com --name myapp
+# -> https://myapp.mysite.com
+```
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                          INTERNET                                    │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  [User Browser] ──HTTPS──▶ [Your VPS:443] ──tunnel──▶ [Your Laptop] │
+│                              (relay)        (NAT-safe)  (localhost)  │
+│                                                                      │
+│  The tunnel is OUTBOUND from home, so NAT doesn't block it!         │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Why This Beats Cloudflare Tunnel
+
+| Feature | SPF | Cloudflare Tunnel | ngrok |
+|---------|-----|-------------------|-------|
+| Self-hosted | ✅ | ❌ | ❌ |
+| No account | ✅ | ❌ | ❌ |
+| No vendor lock-in | ✅ | ❌ | ❌ |
+| Full traffic control | ✅ | ❌ | ❌ |
+| Custom domain | ✅ | ✅ | 💰 |
+| Free | ✅ (+ $5 VPS) | ✅ | ❌ |
+| DDoS protection | ✅ | ✅ | ❌ |
+| Binary size | 76KB | ~50MB | ~25MB |
 
 ## Installation
 
@@ -420,54 +533,65 @@ func main() {
 
 ```
 src/
-├── common.h    # shared types and limits
-├── core.c      # state, blocking, load balancing
-├── server.cpp  # main server (linux/mac/win)
-└── esp32.cpp   # embedded variant
+├── common.h     # shared types and limits
+├── core.c       # state, blocking, load balancing
+├── server.cpp   # main server (linux/mac/win)
+├── tunnel.c     # Cloudflare Tunnel alternative
+├── hooks.c      # custom security scripts
+├── accesslog.c  # cloud LB-style logging
+└── esp32.cpp    # embedded variant
 ```
 
 ## vs Competitors
 
-| Feature | SPF | socat | rinetd | HAProxy | nginx | Cloud LB |
-|---------|-----|-------|--------|---------|-------|----------|
-| Dynamic rules | ✅ | ❌ | ❌ | ✅ | ⚠️ | ✅ |
-| One-liner mode | ✅ | ⚠️ | ❌ | ❌ | ❌ | ❌ |
-| Hot reload | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Load balancing | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
-| Health checks | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
-| TLS | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
-| Custom hooks | ✅ | ❌ | ❌ | ⚠️ | ⚠️ | ❌ |
-| Access logs | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
-| SIEM/Security | ✅ | ❌ | ❌ | ⚠️ | ⚠️ | ⚠️ |
-| Hostnames | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
-| ESP32/IoT | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Self-hosted | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| No vendor lock-in | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Binary size | ~59KB | ~500KB | ~20KB | ~2MB | ~5MB | N/A |
+| Feature | SPF | Cloudflare Tunnel | ngrok | socat | rinetd | HAProxy |
+|---------|-----|-------------------|-------|-------|--------|---------|
+| Tunnel mode | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Self-hosted | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| No account | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| Dynamic rules | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Hot reload | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Load balancing | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Health checks | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| TLS | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Custom hooks | ✅ | ❌ | ❌ | ❌ | ❌ | ⚠️ |
+| Access logs | ✅ | ✅ | 💰 | ❌ | ❌ | ✅ |
+| Free | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ |
+| Binary size | 76KB | ~50MB | ~25MB | ~500KB | ~20KB | ~2MB |
 
-### Why SPF over competitors?
+### Why SPF over Cloudflare Tunnel?
 
-**vs rinetd:**
+- ✅ **Self-hosted** - Your traffic never touches Cloudflare servers
+- ✅ **No account required** - No signup, no email, no verification
+- ✅ **Full control** - Custom security hooks, access to all traffic
+- ✅ **No rate limits** - Cloudflare free tier has limits
+- ✅ **Tiny binary** - 76KB vs 50MB+ for cloudflared
+
+### Why SPF over ngrok?
+
+- ✅ **Self-hosted** - Own your relay, own your data
+- ✅ **Free custom domains** - ngrok charges for this
+- ✅ **No account required** - Just run it
+- ✅ **No connection limits** - ngrok free has 20 connections max
+- ✅ **Load balancing** - Built-in, ngrok has none
+
+### Why SPF over rinetd?
+
 - ✅ SIGHUP hot reload (rinetd needs restart)
 - ✅ Health checks (rinetd has none)
 - ✅ Load balancing (rinetd is 1:1 only)
 - ✅ TLS termination (rinetd has none)
 - ✅ Hostnames (rinetd is IP-only)
+- ✅ Tunnel mode (rinetd can't expose home servers)
 
-**vs socat:**
+### Why SPF over socat?
+
 - ✅ Simple syntax (`spf -f 8080:host:80` vs `socat TCP-LISTEN:8080,fork TCP:host:80`)
 - ✅ Built-in load balancing
 - ✅ Health checks
 - ✅ Persistent daemon (socat is per-connection)
 - ✅ Admin API for live changes
-
-**vs Cloud LBs (AWS ALB/NLB, GCP, Azure):**
-- ✅ Self-hosted (no cloud costs)
-- ✅ No vendor lock-in
-- ✅ Instant provisioning (vs 2-5 minutes)
-- ✅ Custom security hooks (any language)
-- ✅ Full control over config
-- ✅ Same access log format
+- ✅ Tunnel mode for NAT traversal
 
 ## Building
 

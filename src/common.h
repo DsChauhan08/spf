@@ -350,6 +350,37 @@ void spf_access_log(const char* client_ip, uint16_t client_port, uint32_t rule_i
 int spf_access_log_init(const char* path);
 void spf_access_log_close(void);
 
+// ============================================================================
+// TUNNEL MODE - Cloudflare Tunnel Alternative
+// ============================================================================
+// Allows exposing local services to internet without:
+// - Port forwarding
+// - Static IP  
+// - Cloudflare or any third party
+//
+// Usage:
+//   VPS:  spf relay --port 443 --domain mysite.com
+//   Home: spf tunnel --relay mysite.com:7000 --local 3000
+//   Easy: spf expose 3000
+
+typedef struct spf_tunnel_client_t spf_tunnel_client_t;
+typedef struct spf_tunnel_relay_t spf_tunnel_relay_t;
+
+spf_tunnel_client_t* spf_tunnel_client_init(const char* relay_host, uint16_t relay_port,
+                                             const char* name, const char* token,
+                                             uint16_t local_port);
+int spf_tunnel_client_start(spf_tunnel_client_t* client);
+void spf_tunnel_client_stop(spf_tunnel_client_t* client);
+void spf_tunnel_client_status(spf_tunnel_client_t* client, char* buf, size_t len);
+
+spf_tunnel_relay_t* spf_tunnel_relay_init(uint16_t public_port, uint16_t tunnel_port,
+                                           const char* domain);
+int spf_tunnel_relay_start(spf_tunnel_relay_t* relay);
+void spf_tunnel_relay_stop(spf_tunnel_relay_t* relay);
+
+void spf_tunnel_generate_name(char* buf, size_t len);
+int spf_expose(uint16_t local_port, const char* custom_name);
+
 #ifdef __cplusplus
 }
 #endif

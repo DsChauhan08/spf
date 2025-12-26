@@ -1,0 +1,142 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: linux (deb/rpm/binary)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libssl-dev rpm ruby ruby-dev rubygems
+          sudo gem install --no-document fpm
+      - name: Build
+        run: |
+          make clean
+          make -j"$(nproc)"
+          strip bin/spf
+      - name: Package deb and rpm
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p dist
+          fpm -s dir -t deb -n spf -v "$VERSION" --architecture amd64 --license GPL-2.0 \
+              --description "SPF - Production Network Forwarder" bin/spf=/usr/local/bin/spf \
+              -p dist/spf_${VERSION}_amd64.deb
+          fpm -s dir -t rpm -n spf -v "$VERSION" --architecture amd64 --license GPL-2.0 \
+              --description "SPF - Production Network Forwarder" bin/spf=/usr/local/bin/spf \
+              -p dist/spf-${VERSION}-1.x86_64.rpm
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          cp bin/spf artifacts/spf-linux-amd64
+          cp dist/*.deb dist/*.rpm artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spf-linux
+          path: artifacts/*
+
+  windows:
+    name: windows (.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install msys2 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-openssl
+            mingw-w64-x86_64-pkg-config
+            make
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          make clean
+          make CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
+            LIBS="-lssl -lcrypto -lws2_32" TARGET=spf.exe -j"$(nproc)"
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp bin/spf.exe artifacts/spf-windows-amd64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spf-windows
+          path: artifacts/*
+
+  macos:
+    name: macos (binary)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          brew update
+          brew install openssl@3
+      - name: Build
+        env:
+          LDFLAGS: "-L/opt/homebrew/opt/openssl@3/lib"
+          CPPFLAGS: "-I/opt/homebrew/opt/openssl@3/include"
+          PKG_CONFIG_PATH: "/opt/homebrew/opt/openssl@3/lib/pkgconfig"
+        run: |
+          make clean
+          make -j"$(sysctl -n hw.ncpu)"
+          strip bin/spf
+          ARCH=$(uname -m)
+          mkdir -p artifacts
+          cp bin/spf "artifacts/spf-macos-${ARCH}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spf-macos
+          path: artifacts/*
+
+  openbsd:
+    name: openbsd (binary)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build inside OpenBSD VM
+        uses: vmactions/openbsd-vm@v0
+        with:
+          release: "7.5"
+          run: |
+            pkg_add git gmake gcc openssl
+            cd /github/workspace
+            gmake clean
+            gmake CC=gcc CXX=g++ LIBS="-lssl -lcrypto" -j"$(sysctl -n hw.ncpu)"
+            strip bin/spf
+            tar czf spf-openbsd-amd64.tar.gz -C bin spf
+      - name: Collect artifacts
+        run: |
+          mkdir -p artifacts
+          cp spf-openbsd-amd64.tar.gz artifacts/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spf-openbsd
+          path: artifacts/*
+
+  release:
+    name: publish
+    needs: [linux, windows, macos, openbsd]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Show artifacts
+        run: ls -R dist
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
