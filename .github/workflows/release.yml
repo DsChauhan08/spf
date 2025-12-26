@@ -10,15 +10,17 @@ jobs:
   build-linux:
     name: Build Linux
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libssl-dev
+          sudo apt-get install -y build-essential pkg-config libssl-dev rpm
 
-      - name: Build
+      - name: Build binary
         run: |
           make clean || true
           make -j$(nproc) RELEASE_CFLAGS="-O2 -DNDEBUG" RELEASE_CXXFLAGS="-O2 -DNDEBUG -fno-exceptions"
@@ -26,193 +28,119 @@ jobs:
           file bin/spf
           ./bin/spf --help
 
-      - name: Create DEB package
+      - name: Create DEB package (Debian/Ubuntu)
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          [ -z "$VERSION" ] && VERSION="2.1.1"
+          [ -z "$VERSION" ] && VERSION="1.0.1"
+          
           mkdir -p pkg/DEBIAN pkg/usr/local/bin
           cp bin/spf pkg/usr/local/bin/
-          cat > pkg/DEBIAN/control << EOF
+          chmod 755 pkg/usr/local/bin/spf
+          
+          cat > pkg/DEBIAN/control << 'CTRL'
           Package: spf
-          Version: $VERSION
+          Version: VERSION_PLACEHOLDER
           Section: net
           Priority: optional
           Architecture: amd64
-          Maintainer: ${{ github.repository_owner }}
-          Description: SPF - Simple Port Forwarder and Tunnel
+          Depends: libssl3
+          Maintainer: SPF Project
+          Description: SPF - Simple Port Forwarder and Tunnel (Beta)
            Fast, secure, lightweight TCP proxy with tunnel support.
-          EOF
-          dpkg-deb --build pkg spf_${VERSION}_amd64.deb
+           A self-hosted alternative to Cloudflare Tunnel and ngrok.
+          CTRL
+          sed -i "s/VERSION_PLACEHOLDER/$VERSION/" pkg/DEBIAN/control
+          
+          dpkg-deb --build pkg "spf_${VERSION}_amd64.deb"
+          dpkg-deb --info "spf_${VERSION}_amd64.deb"
 
-      - name: Create RPM package
+      - name: Create RPM package (RHEL/Fedora/CentOS)
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          [ -z "$VERSION" ] && VERSION="2.1.1"
-          sudo apt-get install -y rpm
+          [ -z "$VERSION" ] && VERSION="1.0.1"
+          
           mkdir -p rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
           cp bin/spf rpmbuild/SOURCES/
-          cat > rpmbuild/SPECS/spf.spec << EOF
+          
+          cat > rpmbuild/SPECS/spf.spec << SPEC
           Name: spf
           Version: $VERSION
-          Release: 1
-          Summary: Simple Port Forwarder and Tunnel
+          Release: 1%{?dist}
+          Summary: Simple Port Forwarder and Tunnel (Beta)
           License: GPL-2.0
+          URL: https://github.com/${{ github.repository }}
           
           %description
           Fast, secure, lightweight TCP proxy with tunnel support.
+          A self-hosted alternative to Cloudflare Tunnel and ngrok.
           
           %install
           mkdir -p %{buildroot}/usr/local/bin
-          cp %{_sourcedir}/spf %{buildroot}/usr/local/bin/
+          install -m 755 %{_sourcedir}/spf %{buildroot}/usr/local/bin/spf
           
           %files
           /usr/local/bin/spf
-          EOF
+          SPEC
+          
           rpmbuild --define "_topdir $(pwd)/rpmbuild" -bb rpmbuild/SPECS/spf.spec
-          cp rpmbuild/RPMS/x86_64/*.rpm ./spf-${VERSION}-1.x86_64.rpm || cp rpmbuild/RPMS/*/*.rpm ./spf-${VERSION}-1.x86_64.rpm
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-builds
-          path: |
-            bin/spf
-            *.deb
-            *.rpm
-
-  build-windows:
-    name: Build Windows
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: false
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-openssl
-            make
-            pkg-config
-
-      - name: Build
-        shell: msys2 {0}
-        run: |
-          # Build with mingw - override all flags to avoid -march=native
-          make clean || true
-          make CC=gcc CXX=g++ \
-            COMMON_CFLAGS="-Wall -Wextra -O2 -DNDEBUG -DWIN32" \
-            COMMON_CXXFLAGS="-Wall -Wextra -O2 -DNDEBUG -std=c++11 -DWIN32" \
-            RELEASE_CFLAGS="-O2 -DNDEBUG" \
-            RELEASE_CXXFLAGS="-O2 -DNDEBUG -fno-exceptions" \
-            RELEASE_LDFLAGS="-s" \
-            LIBS="-lssl -lcrypto -lws2_32 -lcrypt32 -lpthread" \
-            -j4 || {
-              echo "=== Build failed, checking environment ==="
-              which gcc
-              gcc --version
-              pkg-config --libs openssl || true
-              exit 1
-            }
-          
-          # Rename to .exe if needed
-          if [ -f bin/spf ]; then
-            mv bin/spf bin/spf.exe
-          fi
-          
-          ls -la bin/
-          file bin/spf.exe || true
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-build
-          path: bin/spf.exe
-
-  build-macos:
-    name: Build macOS
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-13
-            arch: x86_64
-            openssl_prefix: /usr/local/opt/openssl@3
-          - runner: macos-14
-            arch: arm64
-            openssl_prefix: /opt/homebrew/opt/openssl@3
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          brew install openssl@3 || true
-          ls -la ${{ matrix.openssl_prefix }}/lib/ || true
-
-      - name: Build
-        run: |
-          export LDFLAGS="-L${{ matrix.openssl_prefix }}/lib"
-          export CPPFLAGS="-I${{ matrix.openssl_prefix }}/include"
-          export PKG_CONFIG_PATH="${{ matrix.openssl_prefix }}/lib/pkgconfig"
-          
-          make clean || true
-          make \
-            COMMON_CFLAGS="-Wall -Wextra -O2 -DNDEBUG -I${{ matrix.openssl_prefix }}/include" \
-            COMMON_CXXFLAGS="-Wall -Wextra -O2 -DNDEBUG -std=c++11 -I${{ matrix.openssl_prefix }}/include" \
-            RELEASE_CFLAGS="-O2 -DNDEBUG" \
-            RELEASE_CXXFLAGS="-O2 -DNDEBUG -fno-exceptions" \
-            RELEASE_LDFLAGS="-L${{ matrix.openssl_prefix }}/lib" \
-            LDFLAGS="-L${{ matrix.openssl_prefix }}/lib" \
-            -j$(sysctl -n hw.ncpu)
-          
-          strip bin/spf || true
-          file bin/spf
-          ./bin/spf --help || true
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-${{ matrix.arch }}
-          path: bin/spf
-
-  release:
-    name: Create Release
-    needs: [build-linux, build-windows, build-macos]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
+          find rpmbuild/RPMS -name "*.rpm" -exec cp {} "./spf-${VERSION}-1.x86_64.rpm" \;
 
       - name: Prepare release files
         run: |
-          mkdir -p release
           VERSION="${GITHUB_REF_NAME#v}"
+          [ -z "$VERSION" ] && VERSION="1.0.1"
           
-          # Linux
-          cp artifacts/linux-builds/spf release/spf-linux-amd64
-          cp artifacts/linux-builds/*.deb release/
-          cp artifacts/linux-builds/*.rpm release/
+          mkdir -p release
+          cp bin/spf "release/spf-linux-amd64"
+          cp *.deb release/
+          cp *.rpm release/
           
-          # Windows
-          cp artifacts/windows-build/spf.exe release/spf-windows-amd64.exe
-          
-          # macOS
-          cp artifacts/macos-x86_64/spf release/spf-macos-x86_64
-          cp artifacts/macos-arm64/spf release/spf-macos-arm64
-          
-          # Checksums
           cd release
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+          ls -la
 
-      - name: Create Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: "SPF Beta ${{ github.ref_name }}"
+          body: |
+            ## SPF Beta Release
+            
+            **Simple Port Forwarder and Tunnel** - A self-hosted alternative to Cloudflare Tunnel and ngrok.
+            
+            ### Downloads
+            - `spf-linux-amd64` - Linux x86_64 binary
+            - `spf_*_amd64.deb` - Debian/Ubuntu package
+            - `spf-*-1.x86_64.rpm` - RHEL/Fedora/CentOS package
+            
+            ### Installation
+            
+            **Binary:**
+            ```bash
+            chmod +x spf-linux-amd64
+            sudo mv spf-linux-amd64 /usr/local/bin/spf
+            ```
+            
+            **Debian/Ubuntu:**
+            ```bash
+            sudo dpkg -i spf_*_amd64.deb
+            ```
+            
+            **RHEL/Fedora/CentOS:**
+            ```bash
+            sudo rpm -i spf-*-1.x86_64.rpm
+            ```
+            
+            ### Quick Start
+            ```bash
+            # Simple port forward
+            spf -f 8080:localhost:3000
+            
+            # Expose local server (like ngrok)
+            spf expose 3000 --relay yourserver.com
+            ```
+            
+            See [docs/guide.md](https://github.com/${{ github.repository }}/blob/main/docs/guide.md) for full documentation.
           generate_release_notes: true
           files: release/*
