@@ -4,3 +4,4 @@ build/
 *.d
 .DS_Store
 PACKAGING.md
+.vscode/

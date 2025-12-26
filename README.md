@@ -1,10 +1,8 @@
-# SPF - Production Network Forwarder
+# SPF - Production Network Forwarder (Beta)
 
 **Fast, secure, lightweight TCP/UDP proxy with enterprise security features.**
 
-**v2.1.0** - Beats rinetd, socat, Cloudflare Tunnel, and cloud LBs. Simple, powerful, extensible.
-
-Full detailed usage is now in [docs/guide.md](docs/guide.md). This README stays concise.
+**Beta v2.1.0** - We’re trying to build a simple, powerful alternative to rinetd, socat, Cloudflare Tunnel, and cloud LBs. Full detailed usage is now in [docs/guide.md](docs/guide.md). This README stays concise.
 
 ## 🚀 Cloudflare Tunnel Alternative
 

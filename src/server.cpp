@@ -615,7 +615,7 @@ void handle_ctrl(int fd) {
                 rule.enabled = true;
                 rule.rate_bps = 100 * 1024 * 1024;
                     rule.max_conns = max_conns > 0 ? (uint32_t)max_conns : 512;
-                    rule.accept_rate = accept_rate > 0 ? (uint32_t)accept_rate : (g_state.config.security.rate_global ? g_state.config.security.rate_global : 200);
+                    rule.accept_rate = accept_rate > 0 ? (uint32_t)accept_rate : (g_state.config.security.rate_global ? g_state.config.security.rate_global : 5000);
                     if (rule.accept_rate) {
                         spf_bucket_init(&rule.accept_bucket, rule.accept_rate, 2.0);
                     }
@@ -958,8 +958,8 @@ int main(int argc, char** argv) {
             rule.listen_port = listen_port;
             rule.enabled = true;
             rule.rate_bps = 100 * 1024 * 1024;
-            rule.max_conns = 512;
-            rule.accept_rate = 200;
+            rule.max_conns = 4096;
+            rule.accept_rate = 10000;  // High rate for one-liner mode
             spf_bucket_init(&rule.accept_bucket, rule.accept_rate, 2.0);
             rule.lb_algo = SPF_LB_ROUNDROBIN;
             rule.tls_terminate = (cert && key);
