@@ -21,7 +21,7 @@
     #define SPF_PLATFORM_GENERIC
 #endif
 
-#define SPF_VERSION "2.1.0"
+#define SPF_VERSION "2.2.0"
 
 // Protocol types - UDP support (rinetd/socat pain point: no UDP)
 typedef enum {
