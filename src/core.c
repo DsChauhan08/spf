@@ -235,6 +235,11 @@ static spf_tracker_t* find_tracker(spf_state_t* state, const char* ip, int* empt
 }
 
 bool spf_is_blocked(spf_state_t* state, const char* ip) {
+    // Input validation
+    if (!state || !ip || strlen(ip) >= SPF_IP_MAX_LEN) {
+        return true;  // Block invalid input
+    }
+    
     pthread_mutex_lock(&state->lock);
     
     if (spf_blocklist_contains(&state->blocklist, ip)) {
@@ -277,7 +282,9 @@ bool spf_register_attempt(spf_state_t* state, const char* ip) {
             return true;
         }
         t = &state->trackers[empty_slot];
+        memset(t, 0, sizeof(spf_tracker_t));  // Zero entire struct first
         strncpy(t->ip, ip, SPF_IP_MAX_LEN - 1);
+        t->ip[SPF_IP_MAX_LEN - 1] = '\0';  // Ensure null termination
         t->count = 1;
         t->first_ts = now;
         t->last_ts = now;
@@ -332,7 +339,9 @@ void spf_block_ip(spf_state_t* state, const char* ip, uint64_t duration_sec) {
     
     if (!t && empty_slot >= 0) {
         t = &state->trackers[empty_slot];
+        memset(t, 0, sizeof(spf_tracker_t));  // Zero entire struct
         strncpy(t->ip, ip, SPF_IP_MAX_LEN - 1);
+        t->ip[SPF_IP_MAX_LEN - 1] = '\0';  // Ensure null termination
         t->first_ts = now;
     }
     

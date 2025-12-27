@@ -11,7 +11,7 @@ TARGET := spf
 INSTALL_PREFIX := /usr/local
 INSTALL_BIN := $(INSTALL_PREFIX)/bin
 
-C_SOURCES := $(wildcard $(SRC_DIR)/*.c)
+C_SOURCES := $(filter-out $(SRC_DIR)/tunnel.c, $(wildcard $(SRC_DIR)/*.c))
 CXX_SOURCES := $(filter-out $(SRC_DIR)/esp32.cpp, $(wildcard $(SRC_DIR)/*.cpp))
 
 C_OBJECTS := $(C_SOURCES:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)

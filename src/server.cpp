@@ -25,6 +25,10 @@ static int g_ctrl_fd = -1;
 static volatile sig_atomic_t g_shutdown = 0;
 static volatile sig_atomic_t g_reload = 0;  // SIGHUP reload flag
 
+// Host mode state
+static bool g_upnp_enabled = false;
+static bool g_ddns_enabled = false;
+
 typedef struct {
     int client_fd;
     int target_fd;
@@ -807,22 +811,14 @@ void daemonize(void) {
     close(STDERR_FILENO);
 }
 
-// Forward declarations for tunnel mode
-static int run_tunnel_mode(int argc, char** argv);
-static int run_relay_mode(int argc, char** argv);
-static int run_expose_mode(int argc, char** argv);
+// Forward declarations for host mode (replaces tunnel mode)
+static int run_host_mode(int argc, char** argv);
 
 int main(int argc, char** argv) {
-    // Check for subcommands (Cloudflare Tunnel alternative)
+    // Check for subcommands
     if (argc >= 2) {
-        if (strcmp(argv[1], "tunnel") == 0) {
-            return run_tunnel_mode(argc - 1, argv + 1);
-        }
-        if (strcmp(argv[1], "relay") == 0) {
-            return run_relay_mode(argc - 1, argv + 1);
-        }
-        if (strcmp(argv[1], "expose") == 0) {
-            return run_expose_mode(argc - 1, argv + 1);
+        if (strcmp(argv[1], "host") == 0 || strcmp(argv[1], "serve") == 0) {
+            return run_host_mode(argc - 1, argv + 1);
         }
     }
     
@@ -868,15 +864,13 @@ int main(int argc, char** argv) {
             case 'h':
                 printf("\n");
                 printf("  ╔═══════════════════════════════════════════════════════════════╗\n");
-                printf("  ║  SPF v%s - The Dead Simple Port Forwarder               ║\n", SPF_VERSION);
+                printf("  ║  SPF v%s - Self-Host From Home (No VPS Needed!)          ║\n", SPF_VERSION);
                 printf("  ╚═══════════════════════════════════════════════════════════════╝\n\n");
-                printf("  QUICK START:\n");
-                printf("    spf expose 3000              # Share localhost:3000 with the world\n");
-                printf("    spf -f 8080:localhost:3000   # Forward port 8080 → localhost:3000\n\n");
+                printf("  QUICK START (host a website from your laptop):\n");
+                printf("    spf host 8080                    # Auto-configure router, serve port\n");
+                printf("    spf host 3000 --domain my.duckdns.org --ddns duckdns --token xxx\n\n");
                 printf("  COMMANDS:\n");
-                printf("    expose <port>    Share your local server (like ngrok/Cloudflare)\n");
-                printf("    tunnel           Connect to a relay server\n");
-                printf("    relay <domain>   Run on VPS as public endpoint\n\n");
+                printf("    host <port>      Host a local server (auto UPnP + DDNS)\n\n");
                 printf("  OPTIONS:\n");
                 printf("    -f, --forward <spec>   Quick forward: listen:target:port\n");
                 printf("    -C, --config <path>    Config file (for multiple rules)\n");
@@ -884,16 +878,18 @@ int main(int argc, char** argv) {
                 printf("    -k, --key <path>       TLS private key\n");
                 printf("    -d, --daemon           Run in background\n");
                 printf("    -h, --help             Show this help\n\n");
+                printf("  HOW IT WORKS:\n");
+                printf("    1. SPF discovers your router via UPnP\n");
+                printf("    2. Automatically opens the port on your router\n");
+                printf("    3. Updates your DDNS domain with your IP\n");
+                printf("    4. Your site is live at your-domain.duckdns.org!\n\n");
                 printf("  EXAMPLES:\n");
                 printf("    # Simple port forward (like socat but easier)\n");
                 printf("    spf -f 8080:myapi.internal:80\n\n");
-                printf("    # Share your local dev server with the world\n");
-                printf("    spf expose 3000 --relay myserver.com\n\n");
-                printf("    # Set up your own relay on a VPS (replace Cloudflare!)\n");
-                printf("    spf relay mydomain.com\n\n");
+                printf("    # Host from home with auto router config + DDNS\n");
+                printf("    spf host 3000 --domain mysite.duckdns.org --ddns duckdns --token XXX\n\n");
                 printf("  MORE HELP:\n");
-                printf("    spf expose --help    # Tunnel client help\n");
-                printf("    spf relay --help     # Relay server help\n");
+                printf("    spf host --help      # Self-hosting help\n");
                 printf("\n");
                 return 0;
         }
@@ -1044,264 +1040,85 @@ int main(int argc, char** argv) {
 }
 
 // ============================================================================
-// TUNNEL MODE - Connect to relay (run at home behind NAT)
+// HOST MODE - Self-host from home with auto UPnP + DDNS (NO VPS!)
 // ============================================================================
-static int run_tunnel_mode(int argc, char** argv) {
-    char* relay_host = NULL;
-    uint16_t relay_port = 7000;
+static int run_host_mode(int argc, char** argv) {
     uint16_t local_port = 0;
-    char* name = NULL;
-    char* token = NULL;
-    
-    // Simple positional: spf tunnel relay.com 3000
-    // Or with options: spf tunnel --relay relay.com --local 3000
-    
-    static struct option opts[] = {
-        {"relay", required_argument, 0, 'r'},
-        {"local", required_argument, 0, 'l'},
-        {"name", required_argument, 0, 'n'},
-        {"token", required_argument, 0, 't'},
-        {"help", no_argument, 0, 'h'},
-        {0, 0, 0, 0}
-    };
-    
-    optind = 1;
-    int c;
-    while ((c = getopt_long(argc, argv, "r:l:n:t:h", opts, NULL)) != -1) {
-        switch (c) {
-            case 'r': {
-                relay_host = optarg;
-                char* colon = strchr(relay_host, ':');
-                if (colon) {
-                    *colon = '\0';
-                    relay_port = atoi(colon + 1);
-                }
-                break;
-            }
-            case 'l': local_port = atoi(optarg); break;
-            case 'n': name = optarg; break;
-            case 't': token = optarg; break;
-            case 'h':
-                printf("\n");
-                printf("  ╔═══════════════════════════════════════════════════╗\n");
-                printf("  ║  SPF Tunnel - Expose Your Local Server            ║\n");
-                printf("  ╚═══════════════════════════════════════════════════╝\n\n");
-                printf("  SIMPLE USAGE:\n");
-                printf("    spf tunnel <relay-server> <local-port>\n\n");
-                printf("  EXAMPLES:\n");
-                printf("    spf tunnel myrelay.com 3000\n");
-                printf("    spf tunnel myrelay.com 8080 --name myapp\n\n");
-                printf("  OPTIONS:\n");
-                printf("    -r, --relay <host:port>  Relay server (default port: 7000)\n");
-                printf("    -l, --local <port>       Local port to expose\n");
-                printf("    -n, --name <name>        Subdomain name (auto-generated if not set)\n");
-                printf("    -t, --token <token>      Auth token (optional)\n\n");
-                printf("  Your local app will be accessible at:\n");
-                printf("    https://<name>.<relay-server>\n\n");
-                return 0;
-        }
-    }
-    
-    // Handle positional arguments: spf tunnel <relay> <port>
-    for (int i = optind; i < argc && i < optind + 2; i++) {
-        if (!relay_host && !isdigit(argv[i][0])) {
-            relay_host = argv[i];
-            char* colon = strchr(relay_host, ':');
-            if (colon) {
-                *colon = '\0';
-                relay_port = atoi(colon + 1);
-            }
-        } else if (local_port == 0 && isdigit(argv[i][0])) {
-            local_port = atoi(argv[i]);
-        }
-    }
-    
-    if (!relay_host || !local_port) {
-        printf("\n");
-        printf("  ❌ Missing required arguments!\n\n");
-        printf("  Usage: spf tunnel <relay-server> <local-port>\n");
-        printf("  Example: spf tunnel myrelay.com 3000\n\n");
-        printf("  Run 'spf tunnel --help' for more options.\n\n");
-        return 1;
-    }
-    
-    // Check if local port is listening
-    int test_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (test_fd >= 0) {
-        struct sockaddr_in addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port = htons(local_port);
-        if (connect(test_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            printf("\n");
-            printf("  ⚠️  Warning: Nothing seems to be running on localhost:%u\n", local_port);
-            printf("     Make sure your app is running before starting the tunnel.\n\n");
-        }
-        close(test_fd);
-    }
-    
-    char gen_name[16];
-    if (!name) {
-        spf_tunnel_generate_name(gen_name, sizeof(gen_name));
-        name = gen_name;
-    }
-    
-    printf("\n");
-    printf("  ╔═══════════════════════════════════════════════════════════════╗\n");
-    printf("  ║  🚀 SPF Tunnel - Cloudflare Alternative                       ║\n");
-    printf("  ╠═══════════════════════════════════════════════════════════════╣\n");
-    printf("  ║                                                               ║\n");
-    printf("  ║  Exposing: localhost:%-5u                                    ║\n", local_port);
-    printf("  ║  Via relay: %s:%-5u                                   ║\n", relay_host, relay_port);
-    printf("  ║                                                               ║\n");
-    printf("  ║  ✨ Your public URL:                                          ║\n");
-    printf("  ║     https://%s.%s                              ║\n", name, relay_host);
-    printf("  ║                                                               ║\n");
-    printf("  ║  Press Ctrl+C to stop                                         ║\n");
-    printf("  ╚═══════════════════════════════════════════════════════════════╝\n");
-    printf("\n");
-    
-    signal(SIGINT, sig_handler);
-    signal(SIGTERM, sig_handler);
-    signal(SIGPIPE, SIG_IGN);
-    
-    spf_tunnel_client_t* client = spf_tunnel_client_init(relay_host, relay_port, name, token, local_port);
-    if (!client) {
-        fprintf(stderr, "Error: failed to initialize tunnel\n");
-        return 1;
-    }
-    
-    spf_tunnel_client_start(client);
-    spf_tunnel_client_stop(client);
-    
-    return 0;
-}
-
-// ============================================================================
-// RELAY MODE - Run on VPS with public IP
-// ============================================================================
-static int run_relay_mode(int argc, char** argv) {
-    uint16_t public_port = 443;
-    uint16_t tunnel_port = 7000;
+    uint16_t external_port = 0;
     char* domain = NULL;
+    char* ddns_provider = NULL;
+    char* ddns_token = NULL;
+    char* ddns_user = NULL;
+    char* ddns_pass = NULL;
     char* cert = NULL;
     char* key = NULL;
+    bool no_upnp = false;
+    bool no_ddns = false;
     
-    // Simple positional: spf relay yourdomain.com
+    // Parse arguments
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--port") == 0 || strcmp(argv[i], "-p") == 0) {
-            if (i + 1 < argc) public_port = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--tunnel-port") == 0 || strcmp(argv[i], "-T") == 0) {
-            if (i + 1 < argc) tunnel_port = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "--domain") == 0 || strcmp(argv[i], "-d") == 0) {
+        if (strcmp(argv[i], "--domain") == 0 || strcmp(argv[i], "-D") == 0) {
             if (i + 1 < argc) domain = argv[++i];
+        } else if (strcmp(argv[i], "--ddns") == 0) {
+            if (i + 1 < argc) ddns_provider = argv[++i];
+        } else if (strcmp(argv[i], "--token") == 0 || strcmp(argv[i], "-t") == 0) {
+            if (i + 1 < argc) ddns_token = argv[++i];
+        } else if (strcmp(argv[i], "--user") == 0 || strcmp(argv[i], "-u") == 0) {
+            if (i + 1 < argc) ddns_user = argv[++i];
+        } else if (strcmp(argv[i], "--pass") == 0) {
+            if (i + 1 < argc) ddns_pass = argv[++i];
+        } else if (strcmp(argv[i], "--external-port") == 0 || strcmp(argv[i], "-e") == 0) {
+            if (i + 1 < argc) external_port = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--cert") == 0 || strcmp(argv[i], "-c") == 0) {
             if (i + 1 < argc) cert = argv[++i];
         } else if (strcmp(argv[i], "--key") == 0 || strcmp(argv[i], "-k") == 0) {
             if (i + 1 < argc) key = argv[++i];
+        } else if (strcmp(argv[i], "--no-upnp") == 0) {
+            no_upnp = true;
+        } else if (strcmp(argv[i], "--no-ddns") == 0) {
+            no_ddns = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             printf("\n");
-            printf("  ╔═══════════════════════════════════════════════════════════╗\n");
-            printf("  ║  SPF Relay - Your Own Public Tunnel Endpoint              ║\n");
-            printf("  ╚═══════════════════════════════════════════════════════════╝\n\n");
+            printf("  ╔═══════════════════════════════════════════════════════════════════╗\n");
+            printf("  ║  SPF Host - Self-Host From Home (NO VPS NEEDED!)                  ║\n");
+            printf("  ╚═══════════════════════════════════════════════════════════════════╝\n\n");
             printf("  USAGE:\n");
-            printf("    spf relay yourdomain.com [options]\n\n");
-            printf("  OPTIONS:\n");
-            printf("    --port, -p <port>      Public HTTPS port (default: 443)\n");
-            printf("    --tunnel-port, -T      Tunnel control port (default: 7000)\n");
-            printf("    --cert, -c <path>      TLS certificate (optional)\n");
-            printf("    --key, -k <path>       TLS private key (optional)\n\n");
-            printf("  QUICK START (on your $5 VPS):\n");
-            printf("    1. Point DNS *.yourdomain.com → your VPS IP\n");
-            printf("    2. spf relay yourdomain.com\n\n");
-            printf("  WITH TLS (recommended):\n");
-            printf("    spf relay yourdomain.com --cert cert.pem --key key.pem\n\n");
-            printf("  Then on your home PC:\n");
-            printf("    spf expose 3000 --relay yourdomain.com\n\n");
-            return 0;
-        } else if (argv[i][0] != '-' && !domain) {
-            domain = argv[i];
-        }
-    }
-    
-    if (!domain) {
-        printf("\n");
-        printf("  ❌ Please specify your domain!\n\n");
-        printf("  Usage: spf relay yourdomain.com\n\n");
-        printf("  Quick setup:\n");
-        printf("    1. Get a domain and point *.yourdomain.com → this server's IP\n");
-        printf("    2. spf relay yourdomain.com\n");
-        printf("    3. On your home PC: spf expose 3000 --relay yourdomain.com\n\n");
-        printf("  Run 'spf relay --help' for more options.\n\n");
-        return 1;
-    }
-    
-    printf("\n");
-    printf("╔══════════════════════════════════════════════════════════════╗\n");
-    printf("║  SPF Relay Server - Self-hosted Cloudflare Alternative       ║\n");
-    printf("╠══════════════════════════════════════════════════════════════╣\n");
-    printf("║  Domain: %-20s                               ║\n", domain);
-    printf("║  Public port: %-5u (HTTPS)                                  ║\n", public_port);
-    printf("║  Tunnel port: %-5u (control)                                ║\n", tunnel_port);
-    printf("║                                                              ║\n");
-    printf("║  Tunnels connect to: %s:%u                          ║\n", domain, tunnel_port);
-    printf("║                                                              ║\n");
-    printf("║  Press Ctrl+C to stop                                        ║\n");;
-    printf("╚══════════════════════════════════════════════════════════════╝\n");
-    printf("\n");
-    
-    signal(SIGINT, sig_handler);
-    signal(SIGTERM, sig_handler);
-    signal(SIGPIPE, SIG_IGN);
-    
-    if (cert && key) {
-        if (tls_init(cert, key) == 0) {
-            spf_log(SPF_LOG_INFO, "relay: TLS enabled");
-        }
-    }
-    
-    spf_tunnel_relay_t* relay = spf_tunnel_relay_init(public_port, tunnel_port, domain);
-    if (!relay) {
-        fprintf(stderr, "Error: failed to initialize relay\n");
-        return 1;
-    }
-    
-    spf_tunnel_relay_start(relay);
-    spf_tunnel_relay_stop(relay);
-    tls_cleanup();
-    
-    return 0;
-}
-
-// ============================================================================
-// EXPOSE MODE - Zero-config tunnel (like ngrok)
-// ============================================================================
-static int run_expose_mode(int argc, char** argv) {
-    uint16_t local_port = 0;
-    char* name = NULL;
-    char* relay = NULL;
-    
-    // Parse arguments - super simple: spf expose 3000
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--name") == 0 || strcmp(argv[i], "-n") == 0) {
-            if (i + 1 < argc) name = argv[++i];
-        } else if (strcmp(argv[i], "--relay") == 0 || strcmp(argv[i], "-r") == 0) {
-            if (i + 1 < argc) relay = argv[++i];
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("\n");
-            printf("  ╔═══════════════════════════════════════════════════╗\n");
-            printf("  ║  SPF Expose - Share Your Server Instantly         ║\n");
-            printf("  ╚═══════════════════════════════════════════════════╝\n\n");
-            printf("  USAGE:\n");
-            printf("    spf expose <port> [--relay your-vps.com]\n\n");
+            printf("    spf host <port> [options]\n\n");
+            printf("  WHAT IT DOES:\n");
+            printf("    1. 🔌 Auto-configures your router via UPnP (opens the port)\n");
+            printf("    2. 🌐 Updates your DDNS domain with your current IP\n");
+            printf("    3. 🔒 Applies enterprise-grade security (rate limits, blocking)\n");
+            printf("    4. ✨ Your local server is now accessible from the internet!\n\n");
             printf("  EXAMPLES:\n");
-            printf("    spf expose 3000                    # Expose port 3000\n");
-            printf("    spf expose 8080 --relay my.vps.com # Use your relay\n");
-            printf("    spf expose 3000 --name myapp       # Custom subdomain\n\n");
-            printf("  SETUP (one-time, on your $5 VPS):\n");
-            printf("    spf relay --domain yourdomain.com\n\n");
-            printf("  No port forwarding, no static IP, works behind NAT!\n\n");
+            printf("    # Basic (router auto-configured, prints your public IP)\n");
+            printf("    spf host 3000\n\n");
+            printf("    # With DuckDNS (free dynamic DNS)\n");
+            printf("    spf host 3000 --domain mysite --ddns duckdns --token YOUR_TOKEN\n\n");
+            printf("    # With HTTPS (auto Let's Encrypt coming soon)\n");
+            printf("    spf host 443 --cert cert.pem --key key.pem --domain mysite.duckdns.org\n\n");
+            printf("  OPTIONS:\n");
+            printf("    -D, --domain <name>      Your domain (e.g., mysite.duckdns.org)\n");
+            printf("    --ddns <provider>        DDNS provider: duckdns, noip, dynu, freedns\n");
+            printf("    -t, --token <token>      DDNS API token\n");
+            printf("    -u, --user <user>        DDNS username (for noip, dynu)\n");
+            printf("    --pass <pass>            DDNS password (for noip, dynu)\n");
+            printf("    -e, --external-port <n>  External port (default: same as local)\n");
+            printf("    -c, --cert <path>        TLS certificate for HTTPS\n");
+            printf("    -k, --key <path>         TLS private key\n");
+            printf("    --no-upnp                Don't auto-configure router\n");
+            printf("    --no-ddns                Don't update DDNS\n\n");
+            printf("  SECURITY FEATURES (enabled by default):\n");
+            printf("    ✅ Rate limiting (30 conn/min per IP)\n");
+            printf("    ✅ Connection limits (50 simultaneous per IP)\n");
+            printf("    ✅ Private IP blocking (prevents spoofing attacks)\n");
+            printf("    ✅ Bogon filtering (blocks reserved IP ranges)\n");
+            printf("    ✅ Automatic brute-force detection & blocking\n");
+            printf("    ✅ Progressive ban (10min → 1hr → 24hr)\n\n");
+            printf("  DDNS PROVIDERS:\n");
+            printf("    duckdns   - Free, easy (duckdns.org)\n");
+            printf("    noip      - Free tier available (noip.com)\n");
+            printf("    dynu      - Free (dynu.com)\n");
+            printf("    freedns   - Free (freedns.afraid.org)\n\n");
             return 0;
         } else if (argv[i][0] != '-' && local_port == 0 && isdigit(argv[i][0])) {
             local_port = atoi(argv[i]);
@@ -1310,78 +1127,196 @@ static int run_expose_mode(int argc, char** argv) {
     
     if (local_port == 0) {
         printf("\n");
-        printf("  ❌ Please specify a port to expose!\n\n");
-        printf("  Usage: spf expose <port>\n");
-        printf("  Example: spf expose 3000\n\n");
-        printf("  Run 'spf expose --help' for more info.\n\n");
+        printf("  ❌ Please specify a port to host!\n\n");
+        printf("  Usage: spf host <port>\n");
+        printf("  Example: spf host 3000\n\n");
+        printf("  Run 'spf host --help' for all options.\n\n");
         return 1;
+    }
+    
+    if (external_port == 0) {
+        external_port = local_port;
     }
     
     // Check if local port is listening
     int test_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (test_sock >= 0) {
         struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
         addr.sin_family = AF_INET;
         addr.sin_port = htons(local_port);
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         if (connect(test_sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            printf("\n");
             printf("  ⚠️  Warning: Nothing seems to be listening on port %u\n", local_port);
-            printf("     Make sure your server is running first!\n\n");
+            printf("     Make sure your server is running!\n\n");
         }
         close(test_sock);
     }
     
-    char gen_name[16];
-    if (!name) {
-        spf_tunnel_generate_name(gen_name, sizeof(gen_name));
-        name = gen_name;
-    }
-    
     printf("\n");
-    printf("╔══════════════════════════════════════════════════════════════════╗\n");
-    printf("║  SPF Expose - Share your local server with the world!            ║\n");
-    printf("╠══════════════════════════════════════════════════════════════════╣\n");
-    printf("║                                                                  ║\n");
-    printf("║  Exposing: localhost:%-5u                                       ║\n", local_port);
-    printf("║                                                                  ║\n");
-    
-    if (relay) {
-        printf("║  🌐 Your URL: https://%s.%s                       ║\n", name, relay);
-        printf("║                                                                  ║\n");
-        printf("║  Using custom relay: %s                                 ║\n", relay);
-    } else {
-        printf("║  ⚠️  No public relay configured!                                 ║\n");
-        printf("║                                                                  ║\n");
-        printf("║  To use SPF expose, you need:                                    ║\n");
-        printf("║                                                                  ║\n");
-        printf("║  OPTION 1: Use your own VPS as relay                             ║\n");
-        printf("║    On VPS:  spf relay --domain yourdomain.com --port 443         ║\n");
-        printf("║    At home: spf expose %u --relay yourdomain.com              ║\n", local_port);
-        printf("║                                                                  ║\n");
-        printf("║  OPTION 2: Simple port forward (if you have public IP)           ║\n");
-        printf("║    spf -f 8080:localhost:%u                                    ║\n", local_port);
+    printf("╔══════════════════════════════════════════════════════════════════════╗\n");
+    printf("║  🏠 SPF Host - Self-Host From Home (NO VPS NEEDED!)                  ║\n");
+    printf("╠══════════════════════════════════════════════════════════════════════╣\n");
+    printf("║                                                                      ║\n");
+    printf("║  Local Port: %-5u                                                   ║\n", local_port);
+    printf("║  External Port: %-5u                                                ║\n", external_port);
+    if (domain) {
+        printf("║  Domain: %-30s                        ║\n", domain);
     }
+    if (cert && key) {
+        printf("║  TLS: Enabled (HTTPS)                                                ║\n");
+    }
+    printf("║                                                                      ║\n");
     
-    printf("║                                                                  ║\n");
-    printf("║  Press Ctrl+C to stop                                            ║\n");
-    printf("╚══════════════════════════════════════════════════════════════════╝\n");
-    printf("\n");
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
+    signal(SIGPIPE, SIG_IGN);
     
-    if (relay) {
-        // Connect to relay
-        signal(SIGINT, sig_handler);
-        signal(SIGTERM, sig_handler);
-        signal(SIGPIPE, SIG_IGN);
+    // Initialize security module
+    spf_security_init();
+    printf("║  🔒 Security: ENABLED (strict home-hosting mode)                     ║\n");
+    
+    // Initialize UPnP and open port on router
+    char external_ip[SPF_IP_MAX_LEN] = {0};
+    char local_ip[SPF_IP_MAX_LEN] = {0};
+    
+    if (!no_upnp) {
+        printf("║                                                                      ║\n");
+        printf("║  🔌 Discovering router...                                            ║\n");
         
-        spf_tunnel_client_t* client = spf_tunnel_client_init(relay, 7000, name, NULL, local_port);
-        if (!client) {
-            fprintf(stderr, "Error: failed to initialize tunnel\n");
-            return 1;
+        if (spf_upnp_init() == 0) {
+            g_upnp_enabled = true;
+            spf_upnp_get_external_ip(external_ip, sizeof(external_ip));
+            spf_upnp_get_local_ip(local_ip, sizeof(local_ip));
+            
+            printf("║     Router found: %s                                      ║\n", spf_upnp_type_str());
+            printf("║     Local IP: %-15s                                      ║\n", local_ip);
+            printf("║     External IP: %-15s                                   ║\n", external_ip);
+            
+            // Open port
+            char desc[64];
+            snprintf(desc, sizeof(desc), "SPF Host Port %u", external_port);
+            if (spf_upnp_add_port(external_port, local_port, "TCP", desc) == 0) {
+                printf("║     ✅ Port %u opened on router!                                    ║\n", external_port);
+            } else {
+                printf("║     ⚠️  Could not open port (may need manual config)                ║\n");
+            }
+        } else {
+            printf("║     ⚠️  No UPnP router found - configure port forwarding manually    ║\n");
         }
-        
-        spf_tunnel_client_start(client);
-        spf_tunnel_client_stop(client);
     }
+    
+    // Initialize DDNS
+    if (!no_ddns && ddns_provider && ddns_token) {
+        printf("║                                                                      ║\n");
+        printf("║  🌐 Setting up Dynamic DNS...                                        ║\n");
+        
+        spf_ddns_provider_t provider = spf_ddns_parse_provider(ddns_provider);
+        if (provider != SPF_DDNS_NONE) {
+            if (spf_ddns_init(provider, domain, ddns_token) == 0) {
+                g_ddns_enabled = true;
+                if (ddns_user && ddns_pass) {
+                    spf_ddns_set_credentials(ddns_user, ddns_pass);
+                }
+                printf("║     ✅ DDNS configured: %s                                  ║\n", ddns_provider);
+            }
+        } else {
+            printf("║     ⚠️  Unknown DDNS provider: %s                                 ║\n", ddns_provider);
+        }
+    }
+    
+    printf("║                                                                      ║\n");
+    printf("╠══════════════════════════════════════════════════════════════════════╣\n");
+    
+    if (external_ip[0] && domain) {
+        printf("║  🌍 Your site is now accessible at:                                  ║\n");
+        if (cert && key) {
+            printf("║     https://%s                                        ║\n", domain);
+        } else {
+            printf("║     http://%s                                         ║\n", domain);
+        }
+    } else if (external_ip[0]) {
+        printf("║  🌍 Your site is now accessible at:                                  ║\n");
+        if (cert && key) {
+            printf("║     https://%s:%u                                          ║\n", external_ip, external_port);
+        } else {
+            printf("║     http://%s:%u                                           ║\n", external_ip, external_port);
+        }
+    } else {
+        printf("║  🌍 Configure your router to forward port %u to this machine        ║\n", external_port);
+    }
+    
+    printf("║                                                                      ║\n");
+    printf("║  Press Ctrl+C to stop (port mapping will be removed)                 ║\n");
+    printf("╚══════════════════════════════════════════════════════════════════════╝\n");
+    printf("\n");
+    
+    // Initialize TLS if certs provided
+    if (cert && key) {
+        if (tls_init(cert, key) == 0) {
+            spf_log(SPF_LOG_INFO, "host: TLS enabled");
+        }
+    }
+    
+    // Initialize main state and create forwarding rule
+    spf_init(&g_state);
+    spf_hooks_init();
+    spf_hooks_autodiscover();
+    
+    // Create rule to forward external:port -> localhost:local_port
+    spf_rule_t rule;
+    memset(&rule, 0, sizeof(rule));
+    rule.id = 1;
+    rule.listen_port = local_port;  // We listen on local port
+    rule.enabled = true;
+    rule.active = true;
+    rule.tls_terminate = (cert && key);
+    rule.lb_algo = SPF_LB_ROUNDROBIN;
+    rule.max_conns = 1000;
+    rule.accept_rate = 200;
+    spf_bucket_init(&rule.accept_bucket, rule.accept_rate, 2.0);
+    
+    // Backend is localhost (the user's app)
+    strncpy(rule.backends[0].host, "127.0.0.1", SPF_IP_MAX_LEN - 1);
+    rule.backends[0].port = local_port;
+    rule.backends[0].weight = 1;
+    rule.backends[0].state = SPF_BACKEND_UP;
+    rule.backend_count = 1;
+    
+    if (spf_add_rule(&g_state, &rule) == 0) {
+        spf_rule_t* added = spf_get_rule(&g_state, rule.id);
+        if (added) {
+            pthread_create(&added->listen_thread, NULL, listener_thread, added);
+            pthread_detach(added->listen_thread);
+        }
+    }
+    
+    // Main loop
+    while (!g_shutdown && g_state.running) {
+        sleep(1);
+    }
+    
+    // Cleanup
+    printf("\n");
+    spf_log(SPF_LOG_INFO, "host: shutting down...");
+    
+    if (g_upnp_enabled) {
+        spf_log(SPF_LOG_INFO, "host: removing port mapping...");
+        spf_upnp_remove_port(external_port, "TCP");
+        spf_upnp_cleanup();
+    }
+    
+    if (g_ddns_enabled) {
+        spf_ddns_cleanup();
+    }
+    
+    spf_security_cleanup();
+    spf_hooks_cleanup();
+    tls_cleanup();
+    spf_shutdown(&g_state);
+    
+    printf("  ✅ Cleanup complete. Port mapping removed.\n\n");
     
     return 0;
 }

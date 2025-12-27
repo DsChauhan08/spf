@@ -351,35 +351,149 @@ int spf_access_log_init(const char* path);
 void spf_access_log_close(void);
 
 // ============================================================================
-// TUNNEL MODE - Cloudflare Tunnel Alternative
+// UPnP / NAT-PMP - Automatic Router Port Forwarding (NO VPS NEEDED!)
 // ============================================================================
-// Allows exposing local services to internet without:
-// - Port forwarding
-// - Static IP  
-// - Cloudflare or any third party
+// Automatically configures your router to forward ports
+// Works with most home routers via UPnP IGD or NAT-PMP
 //
 // Usage:
-//   VPS:  spf relay --port 443 --domain mysite.com
-//   Home: spf tunnel --relay mysite.com:7000 --local 3000
-//   Easy: spf expose 3000
+//   spf_upnp_init();                                    // Discover router
+//   spf_upnp_add_port(80, 8080, "TCP", "Web Server");  // Forward port
 
-typedef struct spf_tunnel_client_t spf_tunnel_client_t;
-typedef struct spf_tunnel_relay_t spf_tunnel_relay_t;
+int spf_upnp_init(void);
+int spf_upnp_add_port(uint16_t external_port, uint16_t internal_port,
+                      const char* protocol, const char* description);
+int spf_upnp_remove_port(uint16_t external_port, const char* protocol);
+int spf_upnp_get_external_ip(char* out, size_t len);
+int spf_upnp_get_local_ip(char* out, size_t len);
+int spf_upnp_get_gateway_ip(char* out, size_t len);
+bool spf_upnp_available(void);
+const char* spf_upnp_type_str(void);
+void spf_upnp_status(char* buf, size_t len);
+void spf_upnp_cleanup(void);
 
-spf_tunnel_client_t* spf_tunnel_client_init(const char* relay_host, uint16_t relay_port,
-                                             const char* name, const char* token,
-                                             uint16_t local_port);
-int spf_tunnel_client_start(spf_tunnel_client_t* client);
-void spf_tunnel_client_stop(spf_tunnel_client_t* client);
-void spf_tunnel_client_status(spf_tunnel_client_t* client, char* buf, size_t len);
+// ============================================================================
+// DDNS - Dynamic DNS Client (NO STATIC IP NEEDED!)
+// ============================================================================
+// Automatically updates your domain when your IP changes
+// Supports: DuckDNS, No-IP, Cloudflare, FreeDNS, Dynu, Custom
+//
+// Usage:
+//   spf_ddns_init(SPF_DDNS_DUCKDNS, "mydomain", "my-token");
+//   // IP is now automatically updated every 5 minutes
 
-spf_tunnel_relay_t* spf_tunnel_relay_init(uint16_t public_port, uint16_t tunnel_port,
-                                           const char* domain);
-int spf_tunnel_relay_start(spf_tunnel_relay_t* relay);
-void spf_tunnel_relay_stop(spf_tunnel_relay_t* relay);
+typedef enum {
+    SPF_DDNS_NONE = 0,
+    SPF_DDNS_DUCKDNS,
+    SPF_DDNS_NOIP,
+    SPF_DDNS_CLOUDFLARE,
+    SPF_DDNS_FREEDNS,
+    SPF_DDNS_DYNU,
+    SPF_DDNS_CUSTOM
+} spf_ddns_provider_t;
 
-void spf_tunnel_generate_name(char* buf, size_t len);
-int spf_expose(uint16_t local_port, const char* custom_name);
+typedef struct {
+    spf_ddns_provider_t provider;
+    char domain[256];
+    char token[256];          // API token/key
+    char username[128];       // For providers that need username
+    char password[128];       // For providers that need password
+    char custom_url[512];     // For custom provider
+    char zone_id[64];         // For Cloudflare
+    char record_id[64];       // For Cloudflare
+    bool enabled;
+} spf_ddns_config_t;
+
+int spf_ddns_init(spf_ddns_provider_t provider, const char* domain, const char* token);
+int spf_ddns_set_credentials(const char* username, const char* password);
+int spf_ddns_set_cloudflare(const char* zone_id, const char* record_id);
+int spf_ddns_set_custom_url(const char* url);
+int spf_ddns_update_now(void);
+int spf_ddns_get_ip(char* out, size_t len);
+void spf_ddns_status(char* buf, size_t len);
+spf_ddns_provider_t spf_ddns_parse_provider(const char* name);
+void spf_ddns_cleanup(void);
+
+// ============================================================================
+// SECURITY MODULE - Enterprise-grade protection for home hosting
+// ============================================================================
+// Multiple layers of security to safely expose your home server
+//
+// Features:
+//   - Per-IP rate limiting (DDoS protection)
+//   - Private/Bogon IP blocking
+//   - Connection limits
+//   - Automatic brute-force detection
+//   - HTTP request validation
+
+void spf_security_init(void);
+int spf_security_check_connection(const char* client_ip, uint16_t port, bool is_external);
+void spf_security_connection_closed(const char* client_ip);
+void spf_security_block_ip(const char* ip, time_t duration);
+void spf_security_unblock_ip(const char* ip);
+bool spf_security_is_blocked(const char* ip);
+void spf_security_configure(bool block_private, bool block_bogons, bool strict,
+                           uint32_t max_conn_per_ip, uint32_t rate_per_ip,
+                           uint32_t global_rate);
+void spf_security_status(char* buf, size_t len);
+void spf_security_list_blocked(char* buf, size_t len);
+void spf_security_cleanup(void);
+int spf_security_check_http_request(const char* method, const char* path, size_t content_length);
+void spf_security_add_headers(char* headers, size_t max_len);
+
+// Advanced security features
+int spf_security_check_payload(const char* data, size_t len);
+void spf_security_track_slow(const char* ip, size_t bytes);
+bool spf_security_is_slow_loris(const char* ip);
+void spf_security_clear_slow(const char* ip);
+int spf_security_check_user_agent(const char* ua);
+void spf_security_update_fingerprint(const char* ip, bool is_error);
+int spf_security_get_anomaly_score(const char* ip);
+
+// ============================================================================
+// SECURITY HARDENING - Privilege dropping, resource limits, memory protection
+// ============================================================================
+// Enterprise-grade OS-level security hardening
+//
+// Features:
+//   - Privilege dropping after binding to ports
+//   - Resource limits (prevent DoS via resource exhaustion)
+//   - Disable core dumps (prevent credential leakage)
+//   - Chroot support
+//   - Secure memory allocation
+
+int spf_hardening_init(void);
+int spf_hardening_drop_privileges(void);
+void spf_hardening_configure(const char* user, const char* group,
+                            bool drop_privs, uint32_t max_files,
+                            uint32_t max_mem_mb);
+void spf_hardening_set_chroot(const char* path);
+void spf_hardening_status(char* buf, size_t len);
+void* spf_secure_alloc(size_t size);
+void spf_secure_free(void* ptr, size_t size);
+int spf_secure_compare(const void* a, const void* b, size_t len);
+int spf_secure_validate_path(const char* path);
+
+// ============================================================================
+// SECURITY CONFIGURATION - User-configurable security parameters
+// ============================================================================
+// Allows users to customize all security settings via config file or CLI
+//
+// Usage:
+//   spf_secconfig_load("/etc/spf/security.conf");
+//   spf_secconfig_set("rate_limit_requests", "200");
+//   spf_secconfig_set("sql_injection_check", "true");
+
+typedef struct spf_security_config spf_security_config_t;
+
+const spf_security_config_t* spf_secconfig_get(void);
+int spf_secconfig_set(const char* key, const char* value);
+int spf_secconfig_load(const char* path);
+bool spf_secconfig_is_whitelisted(const char* ip);
+bool spf_secconfig_is_blacklisted(const char* ip);
+bool spf_secconfig_is_allowed_path(const char* path);
+void spf_secconfig_dump(void);
+void spf_secconfig_generate_example(const char* path);
 
 #ifdef __cplusplus
 }
