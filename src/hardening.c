@@ -235,7 +235,7 @@ void spf_hardening_set_chroot(const char* path) {
 void spf_hardening_status(char* buf, size_t len) {
     snprintf(buf, len,
         "=== Security Hardening Status ===\n"
-        "Running as: uid=%d, gid=%d\n"
+        "Running as: uid=%u, gid=%u\n"
         "Privilege dropping: %s\n"
         "Target user: %s\n"
         "Target group: %s\n"
@@ -243,7 +243,7 @@ void spf_hardening_status(char* buf, size_t len) {
         "Max open files: %u\n"
         "Max memory: %u MB\n"
         "Core dumps: %s\n",
-        getuid(), getgid(),
+        (unsigned)getuid(), (unsigned)getgid(),
         g_hardening.drop_privileges ? "enabled" : "disabled",
         g_hardening.run_user,
         g_hardening.run_group,

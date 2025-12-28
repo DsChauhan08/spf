@@ -21,7 +21,7 @@
     #define SPF_PLATFORM_GENERIC
 #endif
 
-#define SPF_VERSION "1.2.0"
+#define SPF_VERSION "1.2.1"
 
 // Protocol types - UDP support (rinetd/socat pain point: no UDP)
 typedef enum {
@@ -29,19 +29,20 @@ typedef enum {
     SPF_PROTO_UDP
 } spf_proto_t;
 
-#define SPF_MAX_CONNECTIONS 4096
-#define SPF_MAX_RULES 128
-#define SPF_MAX_BACKENDS 16
-#define SPF_MAX_IP_TRACKERS 8192
-#define SPF_MAX_EVENTS 4096
-#define SPF_MAX_BLOCKLIST 65536
+// Optimized limits for smaller binary while maintaining functionality
+#define SPF_MAX_CONNECTIONS 2048
+#define SPF_MAX_RULES 64
+#define SPF_MAX_BACKENDS 8
+#define SPF_MAX_IP_TRACKERS 4096
+#define SPF_MAX_EVENTS 1024
+#define SPF_MAX_BLOCKLIST 32768
 
-#define SPF_BUFFER_SIZE 8192
-#define SPF_CMD_MAX_LEN 512
-#define SPF_RES_MAX_LEN 4096
+#define SPF_BUFFER_SIZE 4096
+#define SPF_CMD_MAX_LEN 256
+#define SPF_RES_MAX_LEN 2048
 #define SPF_IP_MAX_LEN 46
-#define SPF_PATH_MAX 512
-#define SPF_TOKEN_MAX 128
+#define SPF_PATH_MAX 256
+#define SPF_TOKEN_MAX 64
 
 #define SPF_CTRL_PORT_DEFAULT 8081
 #define SPF_METRICS_PORT_DEFAULT 9100

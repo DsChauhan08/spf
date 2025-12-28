@@ -33,33 +33,23 @@
 // SSDP (Simple Service Discovery Protocol) for UPnP discovery
 #define SSDP_ADDR "239.255.255.250"
 #define SSDP_PORT 1900
-#define SSDP_MX 3
-
-// NAT-PMP constants
+#define SSDP_MX 2
 #define NATPMP_PORT 5351
 #define NATPMP_RETRY_MS 250
-#define NATPMP_MAX_RETRIES 9
-
-// Port mapping lease time (seconds)
+#define NATPMP_MAX_RETRIES 6
 #define MAPPING_LEASE_TIME 3600
 #define MAPPING_RENEW_INTERVAL (MAPPING_LEASE_TIME - 60)
-
-// Maximum port mappings we track
-#define MAX_PORT_MAPPINGS 32
+#define MAX_PORT_MAPPINGS 16
 
 typedef enum {
-    SPF_UPNP_NONE = 0,
-    SPF_UPNP_IGD,      // UPnP Internet Gateway Device
-    SPF_UPNP_NATPMP,   // NAT-PMP
-    SPF_UPNP_PCP       // Port Control Protocol
+    SPF_UPNP_NONE = 0, SPF_UPNP_IGD, SPF_UPNP_NATPMP, SPF_UPNP_PCP
 } spf_upnp_type_t;
 
 typedef struct {
     uint16_t external_port;
     uint16_t internal_port;
-    char protocol[8];      // "TCP" or "UDP"
-    char description[64];
-    time_t created_at;
+    char protocol[4];
+    char description[32];
     time_t expires_at;
     bool active;
 } spf_port_mapping_t;
@@ -69,8 +59,8 @@ typedef struct {
     char gateway_ip[SPF_IP_MAX_LEN];
     char local_ip[SPF_IP_MAX_LEN];
     char external_ip[SPF_IP_MAX_LEN];
-    char control_url[512];
-    char service_type[256];
+    char control_url[256];
+    char service_type[128];
     spf_port_mapping_t mappings[MAX_PORT_MAPPINGS];
     int mapping_count;
     pthread_mutex_t lock;
@@ -140,13 +130,13 @@ static int xml_extract_value(const char* xml, const char* tag, char* out, size_t
 
 // HTTP GET request helper
 static int http_get(const char* url, char* response, size_t resp_len) {
-    char host[256] = {0};
-    char path[512] = "/";
+    if (!url || !response || resp_len < 128) return -1;
+    char host[128] = {0};
+    char path[256] = "/";
     int port = 80;
     
-    // Input validation
-    if (!url || !response || resp_len == 0) return -1;
-    if (strlen(url) > 1024) return -1;
+    size_t url_len = strlen(url);
+    if (url_len > 512) return -1;
     
     // Parse URL: http://host:port/path
     const char* p = url;
@@ -227,13 +217,13 @@ static int http_get(const char* url, char* response, size_t resp_len) {
 // SOAP request for UPnP IGD
 static int soap_request(const char* url, const char* service, const char* action, 
                        const char* body, char* response, size_t resp_len) {
-    char host[256] = {0};
-    char path[512] = "/";
+    if (!url || !service || !action || !response || resp_len < 128) return -1;
+    char host[128] = {0};
+    char path[256] = "/";
     int port = 80;
     
-    // Input validation
-    if (!url || !service || !action || !response) return -1;
-    if (strlen(url) > 1024) return -1;
+    size_t url_len = strlen(url);
+    if (url_len > 512) return -1;
     
     // Parse URL
     const char* p = url;
@@ -729,7 +719,6 @@ int spf_upnp_add_port(uint16_t external_port, uint16_t internal_port,
             m->internal_port = internal_port;
             strncpy(m->protocol, proto, sizeof(m->protocol) - 1);
             strncpy(m->description, desc, sizeof(m->description) - 1);
-            m->created_at = time(NULL);
             m->expires_at = time(NULL) + MAPPING_LEASE_TIME;
             m->active = true;
         }

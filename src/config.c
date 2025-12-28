@@ -70,7 +70,9 @@ int spf_load_config(spf_state_t* state, const char* path) {
                 strncpy(state->config.admin.bind_addr, val, SPF_IP_MAX_LEN - 1);
                 state->config.admin.bind_addr[SPF_IP_MAX_LEN - 1] = '\0';
             } else if (strcmp(key, "port") == 0) {
-                state->config.admin.port = atoi(val);
+                int port = atoi(val);
+                if (port > 0 && port <= 65535)
+                    state->config.admin.port = (uint16_t)port;
             } else if (strcmp(key, "token") == 0) {
                 strncpy(state->config.admin.token, val, SPF_TOKEN_MAX - 1);
             } else if (strcmp(key, "cert") == 0) {
@@ -85,9 +87,13 @@ int spf_load_config(spf_state_t* state, const char* path) {
             if (strcmp(key, "enabled") == 0) {
                 state->config.security.enabled = strcmp(val, "true") == 0;
             } else if (strcmp(key, "rate_per_ip") == 0) {
-                state->config.security.rate_per_ip = atoi(val);
+                long v = atol(val);
+                if (v > 0)
+                    state->config.security.rate_per_ip = (uint32_t)v;
             } else if (strcmp(key, "rate_global") == 0) {
-                state->config.security.rate_global = atoi(val);
+                long v = atol(val);
+                if (v > 0)
+                    state->config.security.rate_global = (uint32_t)v;
             } else if (strcmp(key, "webhook") == 0) {
                 strncpy(state->config.security.webhook_url, val, sizeof(state->config.security.webhook_url) - 1);
             } else if (strcmp(key, "ddos") == 0) {
@@ -100,19 +106,25 @@ int spf_load_config(spf_state_t* state, const char* path) {
             if (strcmp(key, "enabled") == 0) {
                 state->config.metrics.enabled = strcmp(val, "true") == 0;
             } else if (strcmp(key, "port") == 0) {
-                state->config.metrics.port = atoi(val);
+                int port = atoi(val);
+                if (port > 0 && port <= 65535)
+                    state->config.metrics.port = (uint16_t)port;
             }
         }
         else if (strncmp(section, "rule.", 5) == 0) {
             if (strcmp(key, "listen") == 0) {
                 spf_rule_t rule;
+                int port;
+
                 memset(&rule, 0, sizeof(rule));
                 uint8_t rnd[4];
                 spf_random_bytes(rnd, 4);
                 uint32_t r;
                 memcpy(&r, rnd, 4);
                 rule.id = r % 90000 + 10000;
-                rule.listen_port = atoi(val);
+                port = atoi(val);
+                if (port > 0 && port <= 65535)
+                    rule.listen_port = (uint16_t)port;
                 rule.enabled = true;
                 rule.active = true;
                 rule.rate_bps = 100 * 1024 * 1024;

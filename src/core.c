@@ -13,124 +13,234 @@
     #define SPF_TIME_MS() millis()
 #else
     #include <sys/time.h>
-#endif
-
-uint64_t spf_time_ms(void) {
-#ifdef SPF_PLATFORM_ESP32
-    return millis();
-#else
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (uint64_t)tv.tv_sec * 1000 + (uint64_t)tv.tv_usec / 1000;
-#endif
-}
-
-uint64_t spf_time_sec(void) {
-    return spf_time_ms() / 1000;
-}
-
-void spf_random_bytes(uint8_t* buf, size_t len) {
-    #ifdef SPF_PLATFORM_ESP32
-    for (size_t i = 0; i < len; i++) buf[i] = (uint8_t)random();
-    #else
-    int fd = open("/dev/urandom", O_RDONLY);
-    if (fd >= 0) {
-        if (read(fd, buf, len) == (ssize_t)len) {
-            close(fd);
-            return;
-        }
-        close(fd);
-    }
-    
-    // Fallback: use thread-local state for rand_r
-    static __thread unsigned int seed = 0;
-    if (seed == 0) seed = (unsigned int)time(NULL) ^ (unsigned int)pthread_self();
-    
-    for (size_t i = 0; i < len; i++) {
-        buf[i] = (uint8_t)rand_r(&seed);
-    }
+    #ifdef __linux__
+        #include <sys/random.h>
     #endif
+#endif
+
+uint64_t spf_time_ms(void)
+{
+#ifdef SPF_PLATFORM_ESP32
+	return millis();
+#else
+	struct timeval tv;
+
+	gettimeofday(&tv, NULL);
+	return (uint64_t)tv.tv_sec * 1000 + (uint64_t)tv.tv_usec / 1000;
+#endif
 }
 
-uint32_t spf_hash_ip(const char* ip) {
-    uint32_t h = 5381;
-    while (*ip) h = ((h << 5) + h) + (uint8_t)*ip++;
-    return h;
+uint64_t spf_time_sec(void)
+{
+	return spf_time_ms() / 1000;
 }
 
-static const char* g_log_prefix[] = {"DBG", "INF", "WRN", "ERR", "SEC"};
+/**
+ * spf_random_bytes - Fill buffer with cryptographically secure random bytes
+ * @buf: destination buffer
+ * @len: number of bytes to generate
+ *
+ * Uses getrandom() on Linux, /dev/urandom as fallback.
+ * On ESP32, uses hardware RNG.
+ */
+void spf_random_bytes(uint8_t *buf, size_t len)
+{
+	if (!buf || len == 0)
+		return;
 
-void spf_log(spf_log_level_t level, const char* fmt, ...) {
-    if (level < 0 || level > SPF_LOG_SECURITY) level = SPF_LOG_INFO;
-    
-    time_t now = time(NULL);
-    struct tm tm_buf;
-    struct tm* t = localtime_r(&now, &tm_buf);
-    char ts[32];
-    if (t) {
-        strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", t);
-    } else {
-        snprintf(ts, sizeof(ts), "(time error)");
-    }
-    
-    fprintf(stderr, "[%s] [%s] ", ts, g_log_prefix[level]);
-    va_list args;
-    va_start(args, fmt);
-    vfprintf(stderr, fmt, args);
-    va_end(args);
-    fprintf(stderr, "\n");
+#ifdef SPF_PLATFORM_ESP32
+	for (size_t i = 0; i < len; i++)
+		buf[i] = (uint8_t)random();
+#else
+	ssize_t ret;
+	int fd;
+
+#ifdef __linux__
+	ret = getrandom(buf, len, 0);
+	if (ret == (ssize_t)len)
+		return;
+#endif
+	fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+	if (fd >= 0) {
+		size_t total = 0;
+
+		while (total < len) {
+			ret = read(fd, buf + total, len - total);
+			if (ret <= 0)
+				break;
+			total += (size_t)ret;
+		}
+		close(fd);
+		if (total == len)
+			return;
+	}
+
+	/* Last resort fallback - not cryptographically secure */
+	{
+		static __thread unsigned int seed;
+
+		if (seed == 0)
+			seed = (unsigned int)time(NULL) ^
+			       (unsigned int)(uintptr_t)&seed;
+		for (size_t i = 0; i < len; i++)
+			buf[i] = (uint8_t)rand_r(&seed);
+	}
+#endif
 }
 
-void spf_init(spf_state_t* state) {
-    memset(state, 0, sizeof(spf_state_t));
-    state->running = true;
-    state->next_conn_id = 1;
-    state->start_time = spf_time_sec();
-    state->authenticated = false;
-    
-    pthread_mutex_init(&state->lock, NULL);
-    pthread_mutex_init(&state->stats_lock, NULL);
-    pthread_mutex_init(&state->events.lock, NULL);
-    pthread_rwlock_init(&state->blocklist.lock, NULL);
-    
-    strncpy(state->config.admin.bind_addr, "127.0.0.1", SPF_IP_MAX_LEN);
-    state->config.admin.port = SPF_CTRL_PORT_DEFAULT;
-    state->config.metrics.port = SPF_METRICS_PORT_DEFAULT;
-    state->config.log_level = SPF_LOG_INFO;
-    
-    spf_log(SPF_LOG_INFO, "spf v%s init done", SPF_VERSION);
+/**
+ * spf_hash_ip - Compute hash of IP address string
+ * @ip: IP address string (must not be NULL)
+ *
+ * Uses djb2 hash algorithm. Returns 0 for NULL input.
+ */
+uint32_t spf_hash_ip(const char *ip)
+{
+	uint32_t h = 5381;
+
+	if (!ip)
+		return 0;
+
+	while (*ip)
+		h = ((h << 5) + h) + (uint8_t)*ip++;
+
+	return h;
 }
 
-void spf_shutdown(spf_state_t* state) {
-    state->running = false;
-    
-    pthread_mutex_destroy(&state->lock);
-    pthread_mutex_destroy(&state->stats_lock);
-    pthread_mutex_destroy(&state->events.lock);
-    pthread_rwlock_destroy(&state->blocklist.lock);
-    
-    if (state->blocklist.ips) {
-        free(state->blocklist.ips);
-        state->blocklist.ips = NULL;
-    }
-    
-    spf_log(SPF_LOG_INFO, "shutdown complete");
+static const char * const g_log_prefix[] = {
+	"DBG", "INF", "WRN", "ERR", "SEC"
+};
+
+/**
+ * spf_log - Thread-safe logging with timestamp
+ * @level: log level (DEBUG, INFO, WARN, ERROR, SECURITY)
+ * @fmt: printf-style format string
+ */
+void spf_log(spf_log_level_t level, const char *fmt, ...)
+{
+	time_t now;
+	struct tm tm_buf;
+	struct tm *t;
+	char ts[24];
+	va_list args;
+
+	if (!fmt)
+		return;
+
+	if (level < SPF_LOG_DEBUG || level > SPF_LOG_SECURITY)
+		level = SPF_LOG_INFO;
+
+	now = time(NULL);
+	t = localtime_r(&now, &tm_buf);
+
+	if (t)
+		strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", t);
+	else
+		ts[0] = '\0';
+
+	flockfile(stderr);
+	fprintf(stderr, "[%s] [%s] ", ts, g_log_prefix[level]);
+	va_start(args, fmt);
+	vfprintf(stderr, fmt, args);
+	va_end(args);
+	fputc('\n', stderr);
+	funlockfile(stderr);
 }
 
-int spf_add_rule(spf_state_t* state, const spf_rule_t* rule) {
-    pthread_mutex_lock(&state->lock);
-    
-    if (state->rule_count >= SPF_MAX_RULES) {
-        pthread_mutex_unlock(&state->lock);
-        return -1;
-    }
-    
-    int idx = -1;
-    for (int i = 0; i < SPF_MAX_RULES; i++) {
-        if (!state->rules[i].active) {
-            idx = i;
-            break;
-        }
+/**
+ * spf_init - Initialize SPF state structure
+ * @state: pointer to state structure to initialize
+ *
+ * Must be called before using any other spf_* functions.
+ * Sets up mutexes with error-checking attributes for debugging.
+ */
+void spf_init(spf_state_t *state)
+{
+	pthread_mutexattr_t attr;
+	int ret;
+
+	if (!state)
+		return;
+
+	memset(state, 0, sizeof(*state));
+	state->running = true;
+	state->next_conn_id = 1;
+	state->start_time = spf_time_sec();
+
+	ret = pthread_mutexattr_init(&attr);
+	if (ret != 0) {
+		spf_log(SPF_LOG_ERROR, "mutexattr_init failed: %d", ret);
+		return;
+	}
+
+	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK);
+	pthread_mutex_init(&state->lock, &attr);
+	pthread_mutex_init(&state->stats_lock, &attr);
+	pthread_mutex_init(&state->events.lock, &attr);
+	pthread_mutexattr_destroy(&attr);
+	pthread_rwlock_init(&state->blocklist.lock, NULL);
+
+	memcpy(state->config.admin.bind_addr, "127.0.0.1", 10);
+	state->config.admin.port = SPF_CTRL_PORT_DEFAULT;
+	state->config.metrics.port = SPF_METRICS_PORT_DEFAULT;
+	state->config.log_level = SPF_LOG_INFO;
+
+	spf_log(SPF_LOG_INFO, "spf v%s initialized", SPF_VERSION);
+}
+
+/**
+ * spf_shutdown - Clean up and release all resources
+ * @state: pointer to state structure
+ *
+ * Must be called before program exit to prevent resource leaks.
+ */
+void spf_shutdown(spf_state_t *state)
+{
+	if (!state)
+		return;
+
+	state->running = false;
+
+	pthread_mutex_destroy(&state->lock);
+	pthread_mutex_destroy(&state->stats_lock);
+	pthread_mutex_destroy(&state->events.lock);
+	pthread_rwlock_destroy(&state->blocklist.lock);
+
+	if (state->blocklist.ips) {
+		free(state->blocklist.ips);
+		state->blocklist.ips = NULL;
+	}
+
+	spf_log(SPF_LOG_INFO, "shutdown complete");
+}
+
+/**
+ * spf_add_rule - Add or update a forwarding rule
+ * @state: pointer to state structure
+ * @rule: rule to add (copied into state)
+ *
+ * Returns 0 on success, -1 on error (table full or invalid input).
+ */
+int spf_add_rule(spf_state_t *state, const spf_rule_t *rule)
+{
+	int idx = -1;
+	int i;
+
+	if (!state || !rule)
+		return -1;
+
+	pthread_mutex_lock(&state->lock);
+
+	if (state->rule_count >= SPF_MAX_RULES) {
+		pthread_mutex_unlock(&state->lock);
+		return -1;
+	}
+
+	for (i = 0; i < SPF_MAX_RULES; i++) {
+		if (!state->rules[i].active) {
+			idx = i;
+			break;
+		}
         if (state->rules[i].id == rule->id) {
             idx = i;
             state->rule_count--;
@@ -150,10 +260,11 @@ int spf_add_rule(spf_state_t* state, const spf_rule_t* rule) {
     // Let's copy field by field or memcpy and then re-init (which implementations usually tolerate if destroyed).
     // Safer: Destroy old locks first if the rule ID was valid.
     if (state->rules[idx].active || state->rules[idx].id != 0) {
+        int j;
+
         pthread_mutex_destroy(&state->rules[idx].lock);
-        for (int i = 0; i < SPF_MAX_BACKENDS; i++) {
-            pthread_mutex_destroy(&state->rules[idx].backends[i].lock);
-        }
+        for (j = 0; j < SPF_MAX_BACKENDS; j++)
+            pthread_mutex_destroy(&state->rules[idx].backends[j].lock);
     }
     
     // safe copy excluding lock would be tedious, so we assume re-init is our path
@@ -163,11 +274,10 @@ int spf_add_rule(spf_state_t* state, const spf_rule_t* rule) {
     // Since we destroyed it above, the memory is now "garbage" / "free to use".
     memcpy(&state->rules[idx], rule, sizeof(spf_rule_t));
     
-    // Now init valid mutexes
+    /* Initialize mutexes for new rule */
     pthread_mutex_init(&state->rules[idx].lock, NULL);
-    for (int i = 0; i < state->rules[idx].backend_count; i++) {
-        pthread_mutex_init(&state->rules[idx].backends[i].lock, NULL);
-    }
+    for (int j = 0; j < state->rules[idx].backend_count; j++)
+        pthread_mutex_init(&state->rules[idx].backends[j].lock, NULL);
     
     state->rules[idx].active = true;
     state->rule_count++;
@@ -374,36 +484,33 @@ void spf_unblock_ip(spf_state_t* state, const char* ip) {
 }
 
 void spf_bucket_init(spf_bucket_t* tb, uint64_t rate, double burst) {
+    if (!tb || rate == 0) return;
     tb->rate = rate;
-    tb->capacity = (uint64_t)(rate * burst);
+    tb->capacity = (uint64_t)(rate * (burst > 0 ? burst : 1.0));
     tb->tokens = (double)tb->capacity;
     tb->last_refill = spf_time_ms();
 }
 
 uint64_t spf_bucket_consume(spf_bucket_t* tb, uint64_t want) {
+    if (!tb || tb->rate == 0) return want;  // No limit
     uint64_t now = spf_time_ms();
     
-    // Handle time wraparound
     if (now >= tb->last_refill) {
-        double dt = (now - tb->last_refill) / 1000.0;
-        tb->tokens += tb->rate * dt;
-        if (tb->tokens > (double)tb->capacity) {
-            tb->tokens = (double)tb->capacity;
-        }
+        double dt = (double)(now - tb->last_refill) / 1000.0;
+        tb->tokens += (double)tb->rate * dt;
+        if (tb->tokens > (double)tb->capacity) tb->tokens = (double)tb->capacity;
         tb->last_refill = now;
     } else {
-        // Time wrapped around, reset
-        tb->last_refill = now;
+        tb->last_refill = now;  // Time wrapped
     }
     
     if (tb->tokens >= (double)want) {
         tb->tokens -= (double)want;
         return want;
     }
-    
-    uint64_t allowed = (uint64_t)tb->tokens;
+    uint64_t got = (uint64_t)tb->tokens;
     tb->tokens = 0.0;
-    return allowed;
+    return got;
 }
 
 void spf_event_push(spf_state_t* state, spf_event_type_t type, const char* ip, 
@@ -464,38 +571,48 @@ void spf_event_get_recent(spf_state_t* state, spf_event_t* out, uint32_t count, 
     pthread_mutex_unlock(&state->events.lock);
 }
 
-bool spf_verify_token(spf_state_t* state, const char* token) {
-    if (state->config.admin.token[0] == '\0') return true;
-    
-    size_t len = strlen(state->config.admin.token);
-    size_t tlen = strlen(token);
-    
-    if (len != tlen) return false;
-    
-    volatile uint8_t diff = 0;
-    for (size_t i = 0; i < len; i++) {
-        diff |= state->config.admin.token[i] ^ token[i];
-    }
-    return diff == 0;
+/**
+ * spf_verify_token - Constant-time token comparison
+ * @state: state containing the expected token
+ * @token: token to verify
+ *
+ * Returns true if token matches, false otherwise.
+ * Uses constant-time comparison to prevent timing attacks.
+ */
+bool spf_verify_token(spf_state_t *state, const char *token)
+{
+	size_t len, tlen, i;
+	volatile uint8_t diff = 0;
+
+	if (!state || !token)
+		return false;
+
+	if (state->config.admin.token[0] == '\0')
+		return true;
+
+	len = strlen(state->config.admin.token);
+	tlen = strlen(token);
+
+	if (len != tlen)
+		return false;
+
+	for (i = 0; i < len; i++)
+		diff |= (uint8_t)(state->config.admin.token[i] ^ token[i]);
+
+	return diff == 0;
 }
 
 void spf_generate_token(char* buf, size_t len) {
-    if (len < 2) {
-        if (len == 1) buf[0] = '\0';
-        return;
-    }
+    if (!buf || len < 2) return;
     
-    static const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-    uint8_t rnd[128];
-    size_t token_len = len - 1;
-    if (token_len > 127) token_len = 127;
+    static const char cs[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    size_t tlen = (len - 1 > 63) ? 63 : len - 1;
+    uint8_t rnd[64];
     
-    spf_random_bytes(rnd, token_len);
-    
-    for (size_t i = 0; i < token_len; i++) {
-        buf[i] = charset[rnd[i] % (sizeof(charset) - 1)];
-    }
-    buf[token_len] = '\0';
+    spf_random_bytes(rnd, tlen);
+    for (size_t i = 0; i < tlen; i++) buf[i] = cs[rnd[i] % 62];
+    buf[tlen] = '\0';
+    explicit_bzero(rnd, sizeof(rnd));
 }
 
 int spf_lb_select_backend(spf_rule_t* rule, const char* client_ip) {
@@ -509,17 +626,20 @@ int spf_lb_select_backend(spf_rule_t* rule, const char* client_ip) {
     int selected = -1;
     
     switch (rule->lb_algo) {
-        case SPF_LB_ROUNDROBIN: {
-            for (int tries = 0; tries < rule->backend_count; tries++) {
-                int idx = rule->rr_index % rule->backend_count;
-                rule->rr_index++;
-                if (rule->backends[idx].state == SPF_BACKEND_UP) {
-                    selected = idx;
-                    break;
-                }
-            }
-            break;
-        }
+	case SPF_LB_ROUNDROBIN: {
+		int tries;
+
+		for (tries = 0; tries < rule->backend_count; tries++) {
+			int idx = (int)(rule->rr_index % (uint32_t)rule->backend_count);
+
+			rule->rr_index++;
+			if (rule->backends[idx].state == SPF_BACKEND_UP) {
+				selected = idx;
+				break;
+			}
+		}
+		break;
+	}
         
         case SPF_LB_LEASTCONN: {
             uint32_t min_conns = UINT32_MAX;
@@ -533,18 +653,21 @@ int spf_lb_select_backend(spf_rule_t* rule, const char* client_ip) {
             break;
         }
         
-        case SPF_LB_IPHASH: {
-            uint32_t h = spf_hash_ip(client_ip);
-            int start = h % rule->backend_count;
-            for (int i = 0; i < rule->backend_count; i++) {
-                int idx = (start + i) % rule->backend_count;
-                if (rule->backends[idx].state == SPF_BACKEND_UP) {
-                    selected = idx;
-                    break;
-                }
-            }
-            break;
-        }
+	case SPF_LB_IPHASH: {
+		uint32_t h = spf_hash_ip(client_ip);
+		int start = (int)(h % (uint32_t)rule->backend_count);
+		int i;
+
+		for (i = 0; i < rule->backend_count; i++) {
+			int idx = (start + i) % rule->backend_count;
+
+			if (rule->backends[idx].state == SPF_BACKEND_UP) {
+				selected = idx;
+				break;
+			}
+		}
+		break;
+	}
         
         case SPF_LB_WEIGHTED: {
             uint32_t total = 0;

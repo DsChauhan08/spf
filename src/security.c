@@ -44,54 +44,41 @@
 #include <ctype.h>
 
 // Security configuration defaults
-#define SEC_MAX_CONN_PER_IP 50          // Max simultaneous connections per IP
-#define SEC_CONN_RATE_PER_IP 30         // Max new connections per IP per minute
-#define SEC_GLOBAL_CONN_RATE 1000       // Max total new connections per second
-#define SEC_MAX_REQUEST_SIZE (10*1024*1024)  // 10MB max request
-#define SEC_SLOW_LORIS_TIMEOUT_SEC 10   // Timeout for slow clients
-#define SEC_BLOCK_DURATION_1ST 600      // 10 min first block
-#define SEC_BLOCK_DURATION_2ND 3600     // 1 hour second block
-#define SEC_BLOCK_DURATION_PERM 86400   // 24 hour third+ block
+#define SEC_MAX_CONN_PER_IP 50
+#define SEC_CONN_RATE_PER_IP 30
+#define SEC_GLOBAL_CONN_RATE 1000
+#define SEC_MAX_REQUEST_SIZE (10*1024*1024)
+#define SEC_SLOW_LORIS_TIMEOUT_SEC 10
+#define SEC_BLOCK_DURATION_1ST 600
+#define SEC_BLOCK_DURATION_2ND 3600
+#define SEC_BLOCK_DURATION_PERM 86400
 
-// Private/Reserved IP ranges (block from external)
 typedef struct {
     uint32_t network;
     uint32_t mask;
-    const char* name;
 } ip_range_t;
 
 static const ip_range_t PRIVATE_RANGES[] = {
-    // RFC1918 private
-    {0x0A000000, 0xFF000000, "10.0.0.0/8"},      // 10.x.x.x
-    {0xAC100000, 0xFFF00000, "172.16.0.0/12"},   // 172.16-31.x.x
-    {0xC0A80000, 0xFFFF0000, "192.168.0.0/16"},  // 192.168.x.x
-    
-    // Loopback
-    {0x7F000000, 0xFF000000, "127.0.0.0/8"},     // 127.x.x.x
-    
-    // Link-local
-    {0xA9FE0000, 0xFFFF0000, "169.254.0.0/16"},  // 169.254.x.x
-    
-    // Multicast
-    {0xE0000000, 0xF0000000, "224.0.0.0/4"},     // 224-239.x.x.x
-    
-    // Reserved
-    {0x00000000, 0xFF000000, "0.0.0.0/8"},       // 0.x.x.x
-    {0xF0000000, 0xF0000000, "240.0.0.0/4"},     // 240-255.x.x.x (reserved)
-    
-    {0, 0, NULL}  // Terminator
+    {0x0A000000, 0xFF000000},  // 10.0.0.0/8
+    {0xAC100000, 0xFFF00000},  // 172.16.0.0/12
+    {0xC0A80000, 0xFFFF0000},  // 192.168.0.0/16
+    {0x7F000000, 0xFF000000},  // 127.0.0.0/8
+    {0xA9FE0000, 0xFFFF0000},  // 169.254.0.0/16
+    {0xE0000000, 0xF0000000},  // 224.0.0.0/4
+    {0x00000000, 0xFF000000},  // 0.0.0.0/8
+    {0xF0000000, 0xF0000000},  // 240.0.0.0/4
+    {0, 0}
 };
 
-// Bogon ranges (unallocated/reserved IP space often used in attacks)
 static const ip_range_t BOGON_RANGES[] = {
-    {0x00000000, 0xFF000000, "0.0.0.0/8"},
-    {0x64400000, 0xFFC00000, "100.64.0.0/10"},   // Carrier-grade NAT
-    {0xC0000000, 0xFFFFFF00, "192.0.0.0/24"},    // IETF Protocol
-    {0xC0000200, 0xFFFFFF00, "192.0.2.0/24"},    // TEST-NET-1
-    {0xC6120000, 0xFFFE0000, "198.18.0.0/15"},   // Benchmark
-    {0xC6336400, 0xFFFFFF00, "198.51.100.0/24"}, // TEST-NET-2
-    {0xCB007100, 0xFFFFFF00, "203.0.113.0/24"},  // TEST-NET-3
-    {0, 0, NULL}
+    {0x00000000, 0xFF000000},  // 0.0.0.0/8
+    {0x64400000, 0xFFC00000},  // 100.64.0.0/10
+    {0xC0000000, 0xFFFFFF00},  // 192.0.0.0/24
+    {0xC0000200, 0xFFFFFF00},  // 192.0.2.0/24
+    {0xC6120000, 0xFFFE0000},  // 198.18.0.0/15
+    {0xC6336400, 0xFFFFFF00},  // 198.51.100.0/24
+    {0xCB007100, 0xFFFFFF00},  // 203.0.113.0/24
+    {0, 0}
 };
 
 // IP connection tracker for advanced rate limiting
@@ -108,26 +95,21 @@ typedef struct {
     time_t block_until;
 } sec_ip_tracker_t;
 
-#define SEC_MAX_TRACKERS 16384
+#define SEC_MAX_TRACKERS 8192
 
 typedef struct {
     sec_ip_tracker_t trackers[SEC_MAX_TRACKERS];
     int tracker_count;
     pthread_mutex_t lock;
-    
-    // Global rate limiting
     spf_bucket_t global_bucket;
     uint64_t total_blocked;
     uint64_t total_allowed;
-    
-    // Configuration
     bool block_private_ips;
     bool block_bogons;
-    bool strict_mode;           // Extra strict for home hosting
+    bool strict_mode;
     uint32_t max_conn_per_ip;
-    uint32_t conn_rate_per_ip;  // Per minute
-    uint32_t global_conn_rate;  // Per second
-    
+    uint32_t conn_rate_per_ip;
+    uint32_t global_conn_rate;
     bool running;
 } sec_state_t;
 
@@ -135,10 +117,8 @@ static sec_state_t g_sec = {0};
 
 // Check if IP is in a range
 static bool ip_in_range(uint32_t ip, const ip_range_t* ranges) {
-    for (int i = 0; ranges[i].name != NULL; i++) {
-        if ((ip & ranges[i].mask) == ranges[i].network) {
-            return true;
-        }
+    for (int i = 0; ranges[i].mask != 0; i++) {
+        if ((ip & ranges[i].mask) == ranges[i].network) return true;
     }
     return false;
 }
@@ -545,85 +525,34 @@ void spf_security_add_headers(char* headers, size_t max_len) {
 // ADVANCED SECURITY FEATURES
 // ============================================================================
 
-// Suspicious pattern detection for common attacks
-typedef struct {
-    const char* pattern;
-    const char* attack_type;
-    int severity;  // 1-5, 5 = most severe
-} attack_pattern_t;
-
-static const attack_pattern_t ATTACK_PATTERNS[] = {
-    // SQL Injection
-    {"' OR '1'='1", "SQL Injection", 5},
-    {"UNION SELECT", "SQL Injection", 5},
-    {"'; DROP TABLE", "SQL Injection", 5},
-    {"1=1--", "SQL Injection", 5},
-    
-    // XSS
-    {"<script>", "XSS", 4},
-    {"javascript:", "XSS", 4},
-    {"onerror=", "XSS", 4},
-    {"onload=", "XSS", 4},
-    
-    // Command Injection
-    {"; rm -rf", "Command Injection", 5},
-    {"| cat /etc", "Command Injection", 5},
-    {"$(", "Command Injection", 4},
-    {"`", "Command Injection", 3},
-    {"&& wget", "Command Injection", 5},
-    
-    // Path Traversal (additional)
-    {"....//", "Path Traversal", 4},
-    {"%2e%2e", "Path Traversal", 4},
-    {"..%c0%af", "Path Traversal", 4},
-    
-    // LFI/RFI
-    {"php://filter", "LFI", 5},
-    {"expect://", "RFI", 5},
-    {"data://", "LFI", 4},
-    
-    // Log Poisoning
-    {"\n", "Log Injection", 3},
-    {"\r", "Log Injection", 3},
-    
-    {NULL, NULL, 0}
+// Attack patterns - compact representation
+typedef struct { const char* p; uint8_t s; } atk_t;
+static const atk_t ATTACKS[] = {
+    {"' OR '", 5}, {"UNION SELECT", 5}, {"'; DROP", 5}, {"1=1--", 5},
+    {"<script>", 4}, {"javascript:", 4}, {"onerror=", 4},
+    {"; rm -rf", 5}, {"| cat /etc", 5}, {"$(", 4}, {"`", 3}, {"&& wget", 5},
+    {"....//", 4}, {"%2e%2e", 4}, {"php://filter", 5}, {"expect://", 5},
+    {NULL, 0}
 };
 
 // Check request for attack patterns
 int spf_security_check_payload(const char* data, size_t len) {
-    if (!data || len == 0) return 0;
+    if (!data || len == 0 || len > 65536) return 0;
     
-    // Create uppercase copy for case-insensitive matching
     char* upper = malloc(len + 1);
     if (!upper) return 0;
     
-    for (size_t i = 0; i < len; i++) {
+    for (size_t i = 0; i < len; i++)
         upper[i] = (char)toupper((unsigned char)data[i]);
-    }
     upper[len] = '\0';
     
     int result = 0;
-    
-    for (int i = 0; ATTACK_PATTERNS[i].pattern != NULL; i++) {
-        size_t plen = strlen(ATTACK_PATTERNS[i].pattern);
-        char* pattern_upper = malloc(plen + 1);
-        if (!pattern_upper) continue;
-        
-        for (size_t j = 0; j < plen; j++) {
-            pattern_upper[j] = (char)toupper((unsigned char)ATTACK_PATTERNS[i].pattern[j]);
-        }
-        pattern_upper[plen] = '\0';
-        
-        if (strstr(upper, pattern_upper)) {
-            spf_log(SPF_LOG_SECURITY, "attack detected: %s (severity %d)",
-                   ATTACK_PATTERNS[i].attack_type, ATTACK_PATTERNS[i].severity);
-            result = ATTACK_PATTERNS[i].severity;
-            free(pattern_upper);
+    for (int i = 0; ATTACKS[i].p; i++) {
+        if (strstr(upper, ATTACKS[i].p)) {
+            result = ATTACKS[i].s;
             break;
         }
-        free(pattern_upper);
     }
-    
     free(upper);
     return result;
 }
@@ -636,8 +565,8 @@ typedef struct {
     bool is_slow;
 } slow_conn_t;
 
-#define MAX_SLOW_TRACKERS 1024
-static slow_conn_t g_slow_conns[MAX_SLOW_TRACKERS] = {0};
+#define MAX_SLOW_TRACKERS 512
+static slow_conn_t g_slow_conns[MAX_SLOW_TRACKERS];
 static pthread_mutex_t g_slow_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Track connection for slow loris detection
@@ -725,47 +654,23 @@ void spf_security_clear_slow(const char* ip) {
 }
 
 // User-Agent anomaly detection
-static const char* SUSPICIOUS_USER_AGENTS[] = {
-    "sqlmap",
-    "nikto",
-    "nmap",
-    "masscan",
-    "gobuster",
-    "dirbuster",
-    "wfuzz",
-    "hydra",
-    "burp",
-    "zap",
-    "acunetix",
-    "nessus",
-    "openvas",
-    NULL
+static const char* const SUS_UA[] = {
+    "sqlmap", "nikto", "nmap", "masscan", "gobuster", "dirbuster",
+    "wfuzz", "hydra", "burp", "zap", "acunetix", "nessus", NULL
 };
 
 int spf_security_check_user_agent(const char* ua) {
-    if (!ua || strlen(ua) == 0) {
-        return 1;  // Missing User-Agent is suspicious
-    }
-    
-    // Create lowercase copy
+    if (!ua || !*ua) return 1;
     size_t len = strlen(ua);
-    char* lower = malloc(len + 1);
-    if (!lower) return 0;
+    if (len > 512) return 2;
     
-    for (size_t i = 0; i < len; i++) {
+    char lower[513];
+    for (size_t i = 0; i < len && i < 512; i++)
         lower[i] = (char)tolower((unsigned char)ua[i]);
-    }
-    lower[len] = '\0';
+    lower[len < 512 ? len : 512] = '\0';
     
-    for (int i = 0; SUSPICIOUS_USER_AGENTS[i]; i++) {
-        if (strstr(lower, SUSPICIOUS_USER_AGENTS[i])) {
-            spf_log(SPF_LOG_SECURITY, "suspicious user-agent: %.50s", ua);
-            free(lower);
-            return 2;
-        }
-    }
-    
-    free(lower);
+    for (int i = 0; SUS_UA[i]; i++)
+        if (strstr(lower, SUS_UA[i])) return 2;
     return 0;
 }
 
@@ -779,8 +684,8 @@ typedef struct {
     uint8_t anomaly_score;
 } ip_fingerprint_t;
 
-#define MAX_FINGERPRINTS 4096
-static ip_fingerprint_t g_fingerprints[MAX_FINGERPRINTS] = {0};
+#define MAX_FINGERPRINTS 2048
+static ip_fingerprint_t g_fingerprints[MAX_FINGERPRINTS];
 static pthread_mutex_t g_fp_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Update fingerprint for anomaly detection

@@ -4,6 +4,7 @@
 #include <openssl/rand.h>
 #include <string.h>
 #include <unistd.h>
+#include <limits.h>
 
 static SSL_CTX* g_server_ctx = NULL;
 static SSL_CTX* g_client_ctx = NULL;
@@ -122,30 +123,62 @@ SSL* tls_connect(int fd, const char* hostname) {
     return ssl;
 }
 
-ssize_t tls_read(SSL* ssl, void* buf, size_t len) {
-    if (!ssl) return -1;
-    int n = SSL_read(ssl, buf, len);
-    if (n <= 0) {
-        int err = SSL_get_error(ssl, n);
-        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-            return 0;
-        }
-        return -1;
-    }
-    return n;
+/**
+ * tls_read - Read data from TLS connection
+ * @ssl: SSL connection handle
+ * @buf: destination buffer
+ * @len: maximum bytes to read
+ *
+ * Returns bytes read, 0 for EAGAIN, -1 on error.
+ */
+ssize_t tls_read(SSL *ssl, void *buf, size_t len)
+{
+	int n, err;
+
+	if (!ssl || !buf)
+		return -1;
+
+	/* Clamp to INT_MAX to prevent overflow in SSL_read */
+	if (len > INT_MAX)
+		len = INT_MAX;
+
+	n = SSL_read(ssl, buf, (int)len);
+	if (n <= 0) {
+		err = SSL_get_error(ssl, n);
+		if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
+			return 0;
+		return -1;
+	}
+	return (ssize_t)n;
 }
 
-ssize_t tls_write(SSL* ssl, const void* buf, size_t len) {
-    if (!ssl) return -1;
-    int n = SSL_write(ssl, buf, len);
-    if (n <= 0) {
-        int err = SSL_get_error(ssl, n);
-        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-            return 0;
-        }
-        return -1;
-    }
-    return n;
+/**
+ * tls_write - Write data to TLS connection
+ * @ssl: SSL connection handle
+ * @buf: source buffer
+ * @len: bytes to write
+ *
+ * Returns bytes written, 0 for EAGAIN, -1 on error.
+ */
+ssize_t tls_write(SSL *ssl, const void *buf, size_t len)
+{
+	int n, err;
+
+	if (!ssl || !buf)
+		return -1;
+
+	/* Clamp to INT_MAX to prevent overflow in SSL_write */
+	if (len > INT_MAX)
+		len = INT_MAX;
+
+	n = SSL_write(ssl, buf, (int)len);
+	if (n <= 0) {
+		err = SSL_get_error(ssl, n);
+		if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE)
+			return 0;
+		return -1;
+	}
+	return (ssize_t)n;
 }
 
 void tls_close(SSL* ssl) {

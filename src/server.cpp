@@ -862,35 +862,18 @@ int main(int argc, char** argv) {
             case 'H': hooks_dir = optarg; break;
             case 'A': access_log_path = optarg; break;
             case 'h':
-                printf("\n");
-                printf("  ╔═══════════════════════════════════════════════════════════════╗\n");
-                printf("  ║  SPF v%s - Self-Host From Home (No VPS Needed!)          ║\n", SPF_VERSION);
-                printf("  ╚═══════════════════════════════════════════════════════════════╝\n\n");
-                printf("  QUICK START (host a website from your laptop):\n");
-                printf("    spf host 8080                    # Auto-configure router, serve port\n");
-                printf("    spf host 3000 --domain my.duckdns.org --ddns duckdns --token xxx\n\n");
-                printf("  COMMANDS:\n");
-                printf("    host <port>      Host a local server (auto UPnP + DDNS)\n\n");
-                printf("  OPTIONS:\n");
-                printf("    -f, --forward <spec>   Quick forward: listen:target:port\n");
-                printf("    -C, --config <path>    Config file (for multiple rules)\n");
-                printf("    -c, --cert <path>      TLS certificate\n");
-                printf("    -k, --key <path>       TLS private key\n");
-                printf("    -d, --daemon           Run in background\n");
-                printf("    -h, --help             Show this help\n\n");
-                printf("  HOW IT WORKS:\n");
-                printf("    1. SPF discovers your router via UPnP\n");
-                printf("    2. Automatically opens the port on your router\n");
-                printf("    3. Updates your DDNS domain with your IP\n");
-                printf("    4. Your site is live at your-domain.duckdns.org!\n\n");
-                printf("  EXAMPLES:\n");
-                printf("    # Simple port forward (like socat but easier)\n");
-                printf("    spf -f 8080:myapi.internal:80\n\n");
-                printf("    # Host from home with auto router config + DDNS\n");
-                printf("    spf host 3000 --domain mysite.duckdns.org --ddns duckdns --token XXX\n\n");
-                printf("  MORE HELP:\n");
-                printf("    spf host --help      # Self-hosting help\n");
-                printf("\n");
+                printf("SPF v%s - Secure Port Forwarder\n\n", SPF_VERSION);
+                printf("Usage: spf [options] | spf host <port> [options]\n\n");
+                printf("Options:\n");
+                printf("  -f, --forward <listen:host:port>  Quick forward\n");
+                printf("  -C, --config <path>               Config file\n");
+                printf("  -c, --cert / -k, --key            TLS cert/key\n");
+                printf("  -d, --daemon                      Background mode\n");
+                printf("  -H, --hooks-dir <dir>             Hooks directory\n");
+                printf("  -A, --access-log <path>           Access log\n");
+                printf("  -h, --help                        Show help\n\n");
+                printf("Commands: host <port>, serve <port>\n");
+                printf("Example: spf -f 8080:backend:80\n");
                 return 0;
         }
     }
@@ -1078,47 +1061,16 @@ static int run_host_mode(int argc, char** argv) {
         } else if (strcmp(argv[i], "--no-ddns") == 0) {
             no_ddns = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("\n");
-            printf("  ╔═══════════════════════════════════════════════════════════════════╗\n");
-            printf("  ║  SPF Host - Self-Host From Home (NO VPS NEEDED!)                  ║\n");
-            printf("  ╚═══════════════════════════════════════════════════════════════════╝\n\n");
-            printf("  USAGE:\n");
-            printf("    spf host <port> [options]\n\n");
-            printf("  WHAT IT DOES:\n");
-            printf("    1. 🔌 Auto-configures your router via UPnP (opens the port)\n");
-            printf("    2. 🌐 Updates your DDNS domain with your current IP\n");
-            printf("    3. 🔒 Applies enterprise-grade security (rate limits, blocking)\n");
-            printf("    4. ✨ Your local server is now accessible from the internet!\n\n");
-            printf("  EXAMPLES:\n");
-            printf("    # Basic (router auto-configured, prints your public IP)\n");
-            printf("    spf host 3000\n\n");
-            printf("    # With DuckDNS (free dynamic DNS)\n");
-            printf("    spf host 3000 --domain mysite --ddns duckdns --token YOUR_TOKEN\n\n");
-            printf("    # With HTTPS (auto Let's Encrypt coming soon)\n");
-            printf("    spf host 443 --cert cert.pem --key key.pem --domain mysite.duckdns.org\n\n");
-            printf("  OPTIONS:\n");
-            printf("    -D, --domain <name>      Your domain (e.g., mysite.duckdns.org)\n");
-            printf("    --ddns <provider>        DDNS provider: duckdns, noip, dynu, freedns\n");
-            printf("    -t, --token <token>      DDNS API token\n");
-            printf("    -u, --user <user>        DDNS username (for noip, dynu)\n");
-            printf("    --pass <pass>            DDNS password (for noip, dynu)\n");
-            printf("    -e, --external-port <n>  External port (default: same as local)\n");
-            printf("    -c, --cert <path>        TLS certificate for HTTPS\n");
-            printf("    -k, --key <path>         TLS private key\n");
-            printf("    --no-upnp                Don't auto-configure router\n");
-            printf("    --no-ddns                Don't update DDNS\n\n");
-            printf("  SECURITY FEATURES (enabled by default):\n");
-            printf("    ✅ Rate limiting (30 conn/min per IP)\n");
-            printf("    ✅ Connection limits (50 simultaneous per IP)\n");
-            printf("    ✅ Private IP blocking (prevents spoofing attacks)\n");
-            printf("    ✅ Bogon filtering (blocks reserved IP ranges)\n");
-            printf("    ✅ Automatic brute-force detection & blocking\n");
-            printf("    ✅ Progressive ban (10min → 1hr → 24hr)\n\n");
-            printf("  DDNS PROVIDERS:\n");
-            printf("    duckdns   - Free, easy (duckdns.org)\n");
-            printf("    noip      - Free tier available (noip.com)\n");
-            printf("    dynu      - Free (dynu.com)\n");
-            printf("    freedns   - Free (freedns.afraid.org)\n\n");
+            printf("SPF Host - Self-host with auto UPnP + DDNS\n\n");
+            printf("Usage: spf host <port> [options]\n\n");
+            printf("Options:\n");
+            printf("  -D, --domain <name>     Domain name\n");
+            printf("  --ddns <provider>       duckdns|noip|dynu|freedns\n");
+            printf("  -t, --token <token>     DDNS token\n");
+            printf("  -u, --user / --pass     DDNS credentials\n");
+            printf("  -e, --external-port     External port\n");
+            printf("  -c, --cert / -k, --key  TLS cert/key\n");
+            printf("  --no-upnp / --no-ddns   Disable features\n");
             return 0;
         } else if (argv[i][0] != '-' && local_port == 0 && isdigit(argv[i][0])) {
             local_port = atoi(argv[i]);
@@ -1126,11 +1078,7 @@ static int run_host_mode(int argc, char** argv) {
     }
     
     if (local_port == 0) {
-        printf("\n");
-        printf("  ❌ Please specify a port to host!\n\n");
-        printf("  Usage: spf host <port>\n");
-        printf("  Example: spf host 3000\n\n");
-        printf("  Run 'spf host --help' for all options.\n\n");
+        printf("Usage: spf host <port>\nExample: spf host 3000\n");
         return 1;
     }
     
@@ -1138,7 +1086,6 @@ static int run_host_mode(int argc, char** argv) {
         external_port = local_port;
     }
     
-    // Check if local port is listening
     int test_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (test_sock >= 0) {
         struct sockaddr_in addr;
@@ -1146,28 +1093,15 @@ static int run_host_mode(int argc, char** argv) {
         addr.sin_family = AF_INET;
         addr.sin_port = htons(local_port);
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        if (connect(test_sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            printf("\n");
-            printf("  ⚠️  Warning: Nothing seems to be listening on port %u\n", local_port);
-            printf("     Make sure your server is running!\n\n");
-        }
+        if (connect(test_sock, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+            printf("Warning: port %u not listening\n", local_port);
         close(test_sock);
     }
     
-    printf("\n");
-    printf("╔══════════════════════════════════════════════════════════════════════╗\n");
-    printf("║  🏠 SPF Host - Self-Host From Home (NO VPS NEEDED!)                  ║\n");
-    printf("╠══════════════════════════════════════════════════════════════════════╣\n");
-    printf("║                                                                      ║\n");
-    printf("║  Local Port: %-5u                                                   ║\n", local_port);
-    printf("║  External Port: %-5u                                                ║\n", external_port);
-    if (domain) {
-        printf("║  Domain: %-30s                        ║\n", domain);
-    }
-    if (cert && key) {
-        printf("║  TLS: Enabled (HTTPS)                                                ║\n");
-    }
-    printf("║                                                                      ║\n");
+    printf("\nSPF Host v%s\n", SPF_VERSION);
+    printf("Local: %u, External: %u\n", local_port, external_port);
+    if (domain) printf("Domain: %s\n", domain);
+    if (cert && key) printf("TLS: enabled\n");
     
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
@@ -1175,82 +1109,45 @@ static int run_host_mode(int argc, char** argv) {
     
     // Initialize security module
     spf_security_init();
-    printf("║  🔒 Security: ENABLED (strict home-hosting mode)                     ║\n");
+    printf("Security: enabled\n");
     
     // Initialize UPnP and open port on router
     char external_ip[SPF_IP_MAX_LEN] = {0};
     char local_ip[SPF_IP_MAX_LEN] = {0};
     
     if (!no_upnp) {
-        printf("║                                                                      ║\n");
-        printf("║  🔌 Discovering router...                                            ║\n");
-        
         if (spf_upnp_init() == 0) {
             g_upnp_enabled = true;
             spf_upnp_get_external_ip(external_ip, sizeof(external_ip));
             spf_upnp_get_local_ip(local_ip, sizeof(local_ip));
-            
-            printf("║     Router found: %s                                      ║\n", spf_upnp_type_str());
-            printf("║     Local IP: %-15s                                      ║\n", local_ip);
-            printf("║     External IP: %-15s                                   ║\n", external_ip);
-            
-            // Open port
-            char desc[64];
-            snprintf(desc, sizeof(desc), "SPF Host Port %u", external_port);
-            if (spf_upnp_add_port(external_port, local_port, "TCP", desc) == 0) {
-                printf("║     ✅ Port %u opened on router!                                    ║\n", external_port);
-            } else {
-                printf("║     ⚠️  Could not open port (may need manual config)                ║\n");
-            }
-        } else {
-            printf("║     ⚠️  No UPnP router found - configure port forwarding manually    ║\n");
+            printf("UPnP: %s %s->%s\n", spf_upnp_type_str(), local_ip, external_ip);
+            char desc[32];
+            snprintf(desc, sizeof(desc), "SPF %u", external_port);
+            if (spf_upnp_add_port(external_port, local_port, "TCP", desc) == 0)
+                printf("Port %u opened\n", external_port);
         }
     }
     
-    // Initialize DDNS
     if (!no_ddns && ddns_provider && ddns_token) {
-        printf("║                                                                      ║\n");
-        printf("║  🌐 Setting up Dynamic DNS...                                        ║\n");
-        
         spf_ddns_provider_t provider = spf_ddns_parse_provider(ddns_provider);
         if (provider != SPF_DDNS_NONE) {
             if (spf_ddns_init(provider, domain, ddns_token) == 0) {
                 g_ddns_enabled = true;
-                if (ddns_user && ddns_pass) {
+                if (ddns_user && ddns_pass)
                     spf_ddns_set_credentials(ddns_user, ddns_pass);
-                }
-                printf("║     ✅ DDNS configured: %s                                  ║\n", ddns_provider);
+                printf("DDNS: %s\n", ddns_provider);
             }
-        } else {
-            printf("║     ⚠️  Unknown DDNS provider: %s                                 ║\n", ddns_provider);
         }
     }
-    
-    printf("║                                                                      ║\n");
-    printf("╠══════════════════════════════════════════════════════════════════════╣\n");
     
     if (external_ip[0] && domain) {
-        printf("║  🌍 Your site is now accessible at:                                  ║\n");
-        if (cert && key) {
-            printf("║     https://%s                                        ║\n", domain);
-        } else {
-            printf("║     http://%s                                         ║\n", domain);
-        }
+        printf("Access: %s://%s\n", (cert && key) ? "https" : "http", domain);
     } else if (external_ip[0]) {
-        printf("║  🌍 Your site is now accessible at:                                  ║\n");
-        if (cert && key) {
-            printf("║     https://%s:%u                                          ║\n", external_ip, external_port);
-        } else {
-            printf("║     http://%s:%u                                           ║\n", external_ip, external_port);
-        }
+        printf("Access: %s://%s:%u\n", (cert && key) ? "https" : "http", external_ip, external_port);
     } else {
-        printf("║  🌍 Configure your router to forward port %u to this machine        ║\n", external_port);
+        printf("Forward port %u to this machine\n", external_port);
     }
-    
-    printf("║                                                                      ║\n");
-    printf("║  Press Ctrl+C to stop (port mapping will be removed)                 ║\n");
-    printf("╚══════════════════════════════════════════════════════════════════════╝\n");
-    printf("\n");
+    printf("Press Ctrl+C to stop\n\n");
     
     // Initialize TLS if certs provided
     if (cert && key) {

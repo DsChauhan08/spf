@@ -33,17 +33,11 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-// DDNS check interval (seconds)
-#define DDNS_CHECK_INTERVAL 300  // 5 minutes
-#define DDNS_FORCE_UPDATE_INTERVAL 86400  // 24 hours
+#define DDNS_CHECK_INTERVAL 300
+#define DDNS_FORCE_UPDATE_INTERVAL 86400
 
-// External IP detection services
-static const char* IP_DETECT_SERVICES[] = {
-    "api.ipify.org",
-    "ifconfig.me",
-    "icanhazip.com",
-    "checkip.amazonaws.com",
-    NULL
+static const char* const IP_SERVICES[] = {
+    "api.ipify.org", "ifconfig.me", "icanhazip.com", NULL
 };
 
 // Use spf_ddns_provider_t and spf_ddns_config_t from common.h
@@ -199,17 +193,12 @@ static int http_get_simple(const char* host, const char* path, char* response, s
 
 // Detect external IP address
 static int ddns_detect_ip(char* out, size_t len) {
-    // First try UPnP (faster, no external request)
     extern int spf_upnp_get_external_ip(char* out, size_t len);
-    if (spf_upnp_get_external_ip(out, len) == 0 && out[0] != '\0') {
-        return 0;
-    }
+    if (spf_upnp_get_external_ip(out, len) == 0 && out[0]) return 0;
     
-    // Fallback to external IP detection services
-    char response[1024];
-    
-    for (int i = 0; IP_DETECT_SERVICES[i]; i++) {
-        if (http_get_simple(IP_DETECT_SERVICES[i], "/", response, sizeof(response)) > 0) {
+    char response[512];
+    for (int i = 0; IP_SERVICES[i]; i++) {
+        if (http_get_simple(IP_SERVICES[i], "/", response, sizeof(response)) > 0) {
             // Extract IP from response body (after HTTP headers)
             char* body = strstr(response, "\r\n\r\n");
             if (body) {

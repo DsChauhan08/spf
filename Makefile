@@ -20,16 +20,28 @@ OBJECTS := $(C_OBJECTS) $(CXX_OBJECTS)
 
 DEPS := $(OBJECTS:.o=.d)
 
-COMMON_CFLAGS ?= -Wall -Wextra -Wpedantic -Werror=implicit-function-declaration
-COMMON_CXXFLAGS ?= -Wall -Wextra -Wpedantic -std=c++11
+# Strict warning flags following Linux kernel standards
+WARN_FLAGS := -Wall -Wextra -Wpedantic -Wformat=2 -Wformat-security \
+              -Wnull-dereference -Wstack-protector -Wstrict-overflow=2 \
+              -Warray-bounds=2 -Wimplicit-fallthrough=3 \
+              -Wshift-overflow=2 -Wcast-qual -Wstringop-overflow=4 \
+              -Wconversion -Warith-conversion -Wlogical-op -Wduplicated-cond \
+              -Wduplicated-branches -Wformat-signedness -Wshadow \
+              -Wpointer-arith -Wunused-macros -Werror=implicit-function-declaration \
+              -Werror=return-type -Werror=strict-prototypes
+
+COMMON_CFLAGS := $(WARN_FLAGS) -ffunction-sections -fdata-sections \
+                 -fstack-protector-strong -D_FORTIFY_SOURCE=2
+COMMON_CXXFLAGS := -Wall -Wextra -Wpedantic -std=c++11 -ffunction-sections -fdata-sections \
+                   -fstack-protector-strong -D_FORTIFY_SOURCE=2
 
 DEBUG_CFLAGS := -g -O0 -DDEBUG
 DEBUG_CXXFLAGS := -g -O0 -DDEBUG
 DEBUG_LDFLAGS :=
 
-RELEASE_CFLAGS ?= -O3 -flto -DNDEBUG
-RELEASE_CXXFLAGS ?= -O3 -flto -DNDEBUG -fno-exceptions
-RELEASE_LDFLAGS ?= -flto -s
+RELEASE_CFLAGS ?= -Os -flto -fno-asynchronous-unwind-tables -fno-ident -fmerge-all-constants -DNDEBUG
+RELEASE_CXXFLAGS ?= -Os -flto -fno-exceptions -fno-rtti -fno-asynchronous-unwind-tables -fno-ident -fmerge-all-constants -DNDEBUG
+RELEASE_LDFLAGS ?= -flto -s -Wl,--gc-sections -Wl,--as-needed
 
 LIBS ?= -lssl -lcrypto -lpthread
 
