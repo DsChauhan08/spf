@@ -103,6 +103,10 @@ void tunl_log(tunl_log_level_t level, const char *fmt, ...)
 	if (!fmt || level < TUNL_LOG_DEBUG || level > TUNL_LOG_ERROR)
 		return;
 
+	/* Respect configured log level */
+	if (level < g_state.log_level)
+		return;
+
 	now = time(NULL);
 	if (localtime_r(&now, &tm_buf))
 		strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm_buf);
@@ -110,11 +114,19 @@ void tunl_log(tunl_log_level_t level, const char *fmt, ...)
 		ts[0] = '\0';
 
 	flockfile(stderr);
-	fprintf(stderr, "[%s] [%s] ", ts, log_prefix[level]);
 	va_start(args, fmt);
-	vfprintf(stderr, fmt, args);
+	if (g_state.log_json) {
+		char msg[512];
+		vsnprintf(msg, sizeof(msg), fmt, args);
+		fprintf(stderr,
+			"{\"ts\":\"%s\",\"level\":\"%s\",\"msg\":\"%s\"}\n",
+			ts, log_prefix[level], msg);
+	} else {
+		fprintf(stderr, "[%s] [%s] ", ts, log_prefix[level]);
+		vfprintf(stderr, fmt, args);
+		fputc('\n', stderr);
+	}
 	va_end(args);
-	fputc('\n', stderr);
 	funlockfile(stderr);
 }
 
@@ -132,7 +144,11 @@ void tunl_init(struct tunl_state *state)
 	state->ctrl_port = TUNL_CTRL_PORT;
 	state->metrics_port = TUNL_METRICS_PORT;
 	state->log_level = TUNL_LOG_INFO;
+	state->log_json = false;
 	memcpy(state->bind_addr, "::1", 4);
+	const char *env_json = getenv("TUNL_LOG_JSON");
+	if (env_json && env_json[0] && env_json[0] != '0')
+		state->log_json = true;
 
 	pthread_mutex_init(&state->lock, NULL);
 

@@ -42,6 +42,7 @@ static int parse_backend(const char *str, struct tunl_backend *b)
 		b->host[TUNL_IP_MAX_LEN - 1] = '\0';
 		b->port = (uint16_t)port;
 		b->state = TUNL_BACKEND_UP;
+		b->healthy = true;
 		return 0;
 	}
 	return -1;
@@ -75,6 +76,7 @@ int tunl_load_config(struct tunl_state *state, const char *path)
 				*e = '\0';
 				strncpy(section, s + 1, sizeof(section) - 1);
 				section[sizeof(section) - 1] = '\0';
+				current_rule = NULL;
 			}
 			continue;
 		}
@@ -114,6 +116,7 @@ int tunl_load_config(struct tunl_state *state, const char *path)
 				int port;
 
 				memset(&rule, 0, sizeof(rule));
+				rule.protocol = TUNL_PROTO_TCP;
 
 				/* Generate rule ID from section name */
 				rule.id = (uint32_t)atoi(section + 5);
@@ -147,6 +150,11 @@ int tunl_load_config(struct tunl_state *state, const char *path)
 						&current_rule->backends[current_rule->backend_count]);
 					current_rule->backend_count++;
 				}
+			} else if (strcmp(key, "proto") == 0 && current_rule) {
+				if (strcmp(val, "udp") == 0)
+					current_rule->protocol = TUNL_PROTO_UDP;
+				else
+					current_rule->protocol = TUNL_PROTO_TCP;
 			} else if (strcmp(key, "lb") == 0 && current_rule) {
 				if (strcmp(val, "rr") == 0)
 					current_rule->lb_algo = TUNL_LB_ROUNDROBIN;

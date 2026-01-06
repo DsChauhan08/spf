@@ -39,6 +39,19 @@
 
 static volatile sig_atomic_t g_shutdown;
 static int g_ctrl_fd = -1;
+static void start_rule_workers(struct tunl_rule *rule)
+{
+	if (!rule || !rule->enabled || rule->backend_count == 0)
+		return;
+
+	pthread_t tid;
+
+	if (pthread_create(&tid, NULL, tunl_health_worker, rule) == 0)
+		pthread_detach(tid);
+	else
+		tunl_log(TUNL_LOG_WARN, "health thread start failed for port %u",
+			rule->listen_port);
+}
 
 /* ============================================================================
  * Socket Helpers
@@ -65,6 +78,33 @@ static int set_nodelay(int fd)
 	int opt = 1;
 
 	return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+}
+
+static ssize_t send_all_nb(int fd, const uint8_t *buf, size_t len)
+{
+	size_t sent = 0;
+	int retries = 0;
+
+	while (sent < len) {
+		ssize_t n = send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
+
+		if (n > 0) {
+			sent += (size_t)n;
+			retries = 0;
+			continue;
+		}
+
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			if (retries++ > 5)
+				break;
+			usleep(1000);
+			continue;
+		}
+
+		return -1;
+	}
+
+	return (ssize_t)sent;
 }
 
 static void get_ip_string(const struct sockaddr_storage *addr,
@@ -145,6 +185,55 @@ static int create_listen_socket(uint16_t port, const char *bind_addr)
 
 	if (bind(fd, (struct sockaddr *)&addr4, sizeof(addr4)) < 0 ||
 	    listen(fd, LISTEN_BACKLOG) < 0) {
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+static int create_udp_socket(uint16_t port, const char *bind_addr)
+{
+	int fd;
+	struct sockaddr_in6 addr6;
+	struct sockaddr_in addr4;
+
+	fd = socket(AF_INET6, SOCK_DGRAM, 0);
+	if (fd >= 0) {
+		int opt = 0;
+		setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &opt, sizeof(opt));
+		memset(&addr6, 0, sizeof(addr6));
+		addr6.sin6_family = AF_INET6;
+		addr6.sin6_port = htons(port);
+		if (bind_addr && bind_addr[0]) {
+			if (inet_pton(AF_INET6, bind_addr, &addr6.sin6_addr) != 1) {
+				struct in_addr v4;
+				if (inet_pton(AF_INET, bind_addr, &v4) == 1) {
+					memset(&addr6.sin6_addr, 0, 10);
+					memset(((uint8_t *)&addr6.sin6_addr) + 10, 0xff, 2);
+					memcpy(((uint8_t *)&addr6.sin6_addr) + 12, &v4, 4);
+				}
+			}
+		} else {
+			addr6.sin6_addr = in6addr_any;
+		}
+		if (bind(fd, (struct sockaddr *)&addr6, sizeof(addr6)) == 0)
+			return fd;
+		close(fd);
+	}
+
+	fd = socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0)
+		return -1;
+
+	memset(&addr4, 0, sizeof(addr4));
+	addr4.sin_family = AF_INET;
+	addr4.sin_port = htons(port);
+	if (bind_addr && bind_addr[0])
+		inet_pton(AF_INET, bind_addr, &addr4.sin_addr);
+	else
+		addr4.sin_addr.s_addr = INADDR_ANY;
+
+	if (bind(fd, (struct sockaddr *)&addr4, sizeof(addr4)) < 0) {
 		close(fd);
 		return -1;
 	}
@@ -283,8 +372,7 @@ static void session_run(struct session *s)
 					s->active = false;
 					break;
 				}
-				if (send(s->backend_fd, buf, (size_t)n,
-					 MSG_NOSIGNAL) != n) {
+				if (send_all_nb(s->backend_fd, buf, (size_t)n) != n) {
 					s->active = false;
 					break;
 				}
@@ -296,8 +384,7 @@ static void session_run(struct session *s)
 					s->active = false;
 					break;
 				}
-				if (send(s->client_fd, buf, (size_t)n,
-					 MSG_NOSIGNAL) != n) {
+				if (send_all_nb(s->client_fd, buf, (size_t)n) != n) {
 					s->active = false;
 					break;
 				}
@@ -351,7 +438,7 @@ static void *listener_thread(void *arg)
 	char ip[INET6_ADDRSTRLEN];
 	int lfd;
 
-	lfd = create_listen_socket(rule->listen_port, NULL);
+	lfd = create_listen_socket(rule->listen_port, g_state.bind_addr);
 	if (lfd < 0) {
 		tunl_log(TUNL_LOG_ERROR, "bind port %u failed", rule->listen_port);
 		return NULL;
@@ -436,6 +523,93 @@ static void *listener_thread(void *arg)
 
 	close(lfd);
 	tunl_log(TUNL_LOG_INFO, "listener stopped for port %u", rule->listen_port);
+	return NULL;
+}
+
+static int udp_send_recv(struct tunl_rule *rule, int backend_idx,
+			 const uint8_t *buf, ssize_t len,
+			 struct sockaddr_storage *client, socklen_t client_len,
+			 int lfd)
+{
+	struct tunl_backend *be = &rule->backends[backend_idx];
+	struct addrinfo hints, *res = NULL;
+	char port_str[8];
+	int sfd = -1;
+	int ret = -1;
+	uint8_t rbuf[TUNL_BUFFER_SIZE];
+
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_DGRAM;
+	snprintf(port_str, sizeof(port_str), "%u", be->port);
+	if (getaddrinfo(be->host, port_str, &hints, &res) != 0 || !res)
+		return -1;
+
+	for (struct addrinfo *rp = res; rp; rp = rp->ai_next) {
+		sfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+		if (sfd < 0)
+			continue;
+		if (sendto(sfd, buf, (size_t)len, 0, rp->ai_addr, rp->ai_addrlen) < 0) {
+			close(sfd);
+			sfd = -1;
+			continue;
+		}
+		struct timeval tv = {1, 0};
+		setsockopt(sfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		ssize_t n = recvfrom(sfd, rbuf, sizeof(rbuf), 0, NULL, NULL);
+		if (n > 0) {
+			if (sendto(lfd, rbuf, (size_t)n, 0,
+				   (struct sockaddr *)client, client_len) == n)
+				ret = 0;
+		}
+		close(sfd);
+		if (ret == 0)
+			break;
+	}
+
+	freeaddrinfo(res);
+	return ret;
+}
+
+static void *udp_listener_thread(void *arg)
+{
+	struct tunl_rule *rule = (struct tunl_rule *)arg;
+	int lfd;
+
+	lfd = create_udp_socket(rule->listen_port, g_state.bind_addr);
+	if (lfd < 0) {
+		tunl_log(TUNL_LOG_ERROR, "udp bind port %u failed", rule->listen_port);
+		return NULL;
+	}
+
+	tunl_log(TUNL_LOG_INFO, "udp listening on [%s]:%u",
+		 g_state.bind_addr[0] ? g_state.bind_addr : "::",
+		 rule->listen_port);
+
+	while (!g_shutdown && g_state.running && rule->enabled) {
+		uint8_t buf[TUNL_BUFFER_SIZE];
+		struct sockaddr_storage addr;
+		socklen_t addrlen = sizeof(addr);
+		ssize_t n = recvfrom(lfd, buf, sizeof(buf), 0,
+				(struct sockaddr *)&addr, &addrlen);
+		if (n <= 0)
+			continue;
+
+		char ip[INET6_ADDRSTRLEN];
+		get_ip_string(&addr, ip, sizeof(ip));
+		if (!tunl_rate_check(&g_state, ip))
+			continue;
+
+		int backend_idx = tunl_select_backend(rule, ip);
+		if (backend_idx < 0)
+			continue;
+
+		tunl_backend_conn_start(rule, backend_idx);
+		udp_send_recv(rule, backend_idx, buf, n, &addr, addrlen, lfd);
+		tunl_backend_conn_end(rule, backend_idx);
+	}
+
+	close(lfd);
 	return NULL;
 }
 
@@ -554,6 +728,112 @@ static void *ctrl_thread(void *arg)
 	}
 
 	close(g_ctrl_fd);
+	return NULL;
+}
+
+/* ============================================================================
+ * Metrics Endpoint (Prometheus text format)
+ * ============================================================================ */
+
+static void metrics_emit(int fd)
+{
+	char buf[16384];
+	size_t off = 0;
+
+	#define APPEND_FMT(...) do { \
+		off += (size_t)snprintf(buf + off, sizeof(buf) - off, __VA_ARGS__); \
+	} while (0)
+	#define APPEND_STR(str) do { \
+		size_t l = strlen(str); \
+		if (off + l < sizeof(buf)) { memcpy(buf + off, str, l); off += l; } \
+	} while (0)
+
+	pthread_mutex_lock(&g_state.lock);
+	APPEND_STR("# HELP tunl_info Build info\n");
+	APPEND_STR("# TYPE tunl_info gauge\n");
+	APPEND_FMT("tunl_info{version=\"%s\"} 1\n", TUNL_VERSION);
+	APPEND_STR("# HELP tunl_sessions_active Active sessions\n");
+	APPEND_STR("# TYPE tunl_sessions_active gauge\n");
+	APPEND_FMT("tunl_sessions_active %u\n", g_state.session_count);
+	APPEND_STR("# HELP tunl_connections_total Total accepted connections\n");
+	APPEND_STR("# TYPE tunl_connections_total counter\n");
+	APPEND_FMT("tunl_connections_total %lu\n", (unsigned long)g_state.total_conns);
+	APPEND_STR("# HELP tunl_bytes_in Total ingress bytes\n");
+	APPEND_STR("# TYPE tunl_bytes_in counter\n");
+	APPEND_FMT("tunl_bytes_in %lu\n", (unsigned long)g_state.total_bytes_in);
+	APPEND_STR("# HELP tunl_bytes_out Total egress bytes\n");
+	APPEND_STR("# TYPE tunl_bytes_out counter\n");
+	APPEND_FMT("tunl_bytes_out %lu\n", (unsigned long)g_state.total_bytes_out);
+
+	for (int i = 0; i < TUNL_MAX_RULES; i++) {
+		if (!g_state.rules[i].enabled)
+			continue;
+		struct tunl_rule *r = &g_state.rules[i];
+		APPEND_STR("# HELP tunl_rule_active_connections Active connections per rule\n");
+		APPEND_STR("# TYPE tunl_rule_active_connections gauge\n");
+		APPEND_FMT("tunl_rule_active_connections{rule=\"%u\",port=\"%u\",proto=\"%s\"} %u\n",
+			r->id, r->listen_port, r->protocol == TUNL_PROTO_UDP ? "udp" : "tcp",
+			r->active_conns);
+		for (int b = 0; b < r->backend_count; b++) {
+			struct tunl_backend *be = &r->backends[b];
+			APPEND_STR("# HELP tunl_backend_active_connections Active connections per backend\n");
+			APPEND_STR("# TYPE tunl_backend_active_connections gauge\n");
+			APPEND_FMT("tunl_backend_active_connections{rule=\"%u\",backend=\"%s:%u\"} %u\n",
+				r->id, be->host, be->port, be->active_conns);
+			APPEND_STR("# HELP tunl_backend_total_connections Total connections per backend\n");
+			APPEND_STR("# TYPE tunl_backend_total_connections counter\n");
+			APPEND_FMT("tunl_backend_total_connections{rule=\"%u\",backend=\"%s:%u\"} %lu\n",
+				r->id, be->host, be->port, (unsigned long)be->total_conns);
+			APPEND_STR("# HELP tunl_backend_health Backend health state (1=up,0=down)\n");
+			APPEND_STR("# TYPE tunl_backend_health gauge\n");
+			APPEND_FMT("tunl_backend_health{rule=\"%u\",backend=\"%s:%u\"} %d\n",
+				r->id, be->host, be->port, be->state == TUNL_BACKEND_UP ? 1 : 0);
+			APPEND_STR("# HELP tunl_backend_last_rtt_ms Last health check RTT in ms\n");
+			APPEND_STR("# TYPE tunl_backend_last_rtt_ms gauge\n");
+			APPEND_FMT("tunl_backend_last_rtt_ms{rule=\"%u\",backend=\"%s:%u\"} %u\n",
+				r->id, be->host, be->port, be->last_rtt_ms);
+			APPEND_STR("# HELP tunl_backend_last_check_ms Last health check timestamp (ms)\n");
+			APPEND_STR("# TYPE tunl_backend_last_check_ms gauge\n");
+			APPEND_FMT("tunl_backend_last_check_ms{rule=\"%u\",backend=\"%s:%u\"} %lu\n",
+				r->id, be->host, be->port, (unsigned long)be->last_check_ms);
+		}
+	}
+	pthread_mutex_unlock(&g_state.lock);
+
+	const char hdr[] = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4\r\nConnection: close\r\n\r\n";
+	send(fd, hdr, strlen(hdr), MSG_NOSIGNAL);
+	send(fd, buf, off, MSG_NOSIGNAL);
+
+	#undef APPEND_FMT
+	#undef APPEND_STR
+}
+
+static void *metrics_thread(void *arg)
+{
+	(void)arg;
+
+	int mfd = create_listen_socket(g_state.metrics_port, g_state.bind_addr);
+	if (mfd < 0) {
+		tunl_log(TUNL_LOG_ERROR, "metrics bind failed");
+		return NULL;
+	}
+
+	tunl_log(TUNL_LOG_INFO, "metrics on [%s]:%u",
+		 g_state.bind_addr[0] ? g_state.bind_addr : "::",
+		 g_state.metrics_port);
+
+	while (!g_shutdown && g_state.running) {
+		int cfd = accept(mfd, NULL, NULL);
+		if (cfd < 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		metrics_emit(cfd);
+		close(cfd);
+	}
+
+	close(mfd);
 	return NULL;
 }
 
@@ -693,8 +973,13 @@ static int cmd_serve(int argc, char **argv)
 				if (r) {
 					pthread_t tid;
 
-					pthread_create(&tid, NULL, listener_thread, r);
+					void *(*thr)(void *) = listener_thread;
+					if (r->protocol == TUNL_PROTO_UDP)
+						thr = udp_listener_thread;
+
+					pthread_create(&tid, NULL, thr, r);
 					pthread_detach(tid);
+					start_rule_workers(r);
 				}
 			}
 		} else {
@@ -706,10 +991,19 @@ static int cmd_serve(int argc, char **argv)
 	/* Start listeners for config rules */
 	for (int i = 0; i < TUNL_MAX_RULES; i++) {
 		if (g_state.rules[i].enabled) {
+			if (g_state.rules[i].backend_count == 0) {
+				tunl_log(TUNL_LOG_WARN, "rule %u has no backends; skipping listener",
+					g_state.rules[i].id);
+				continue;
+			}
 			pthread_t tid;
+			void *(*thr)(void *) = listener_thread;
+			if (g_state.rules[i].protocol == TUNL_PROTO_UDP)
+				thr = udp_listener_thread;
 
-			pthread_create(&tid, NULL, listener_thread, &g_state.rules[i]);
+			pthread_create(&tid, NULL, thr, &g_state.rules[i]);
 			pthread_detach(tid);
+			start_rule_workers(&g_state.rules[i]);
 		}
 	}
 
@@ -718,8 +1012,10 @@ static int cmd_serve(int argc, char **argv)
 	signal(SIGPIPE, SIG_IGN);
 
 	pthread_t ctrl_tid;
+ 	pthread_t metrics_tid;
 
 	pthread_create(&ctrl_tid, NULL, ctrl_thread, NULL);
+	pthread_create(&metrics_tid, NULL, metrics_thread, NULL);
 
 	if (!daemon_mode) {
 		printf("tunl v%s\n", TUNL_VERSION);
@@ -738,6 +1034,7 @@ static int cmd_serve(int argc, char **argv)
 		close(g_ctrl_fd);
 
 	pthread_join(ctrl_tid, NULL);
+	pthread_join(metrics_tid, NULL);
 	tunl_shutdown(&g_state);
 
 	return 0;

@@ -102,7 +102,7 @@ static int health_tcp_check(const char *host, uint16_t port, int timeout_ms)
 void *tunl_health_worker(void *arg)
 {
 	struct tunl_rule *rule = (struct tunl_rule *)arg;
-	static uint8_t fail_count[TUNL_MAX_BACKENDS];
+	uint8_t fail_count[TUNL_MAX_BACKENDS];
 
 	memset(fail_count, 0, sizeof(fail_count));
 
@@ -111,7 +111,9 @@ void *tunl_health_worker(void *arg)
 	while (g_state.running && rule->enabled) {
 		for (int i = 0; i < rule->backend_count; i++) {
 			struct tunl_backend *b = &rule->backends[i];
+			uint64_t start_ms = tunl_time_ms();
 			int ok = health_tcp_check(b->host, b->port, HEALTH_TIMEOUT_MS);
+			uint64_t end_ms = tunl_time_ms();
 
 			pthread_mutex_lock(&rule->lock);
 
@@ -122,6 +124,7 @@ void *tunl_health_worker(void *arg)
 						 b->host, b->port);
 				}
 				fail_count[i] = 0;
+				b->last_rtt_ms = (uint32_t)(end_ms - start_ms);
 			} else {
 				fail_count[i]++;
 				if (fail_count[i] >= HEALTH_FAIL_THRESHOLD &&
@@ -131,6 +134,8 @@ void *tunl_health_worker(void *arg)
 						 b->host, b->port);
 				}
 			}
+
+			b->last_check_ms = end_ms;
 
 			pthread_mutex_unlock(&rule->lock);
 		}

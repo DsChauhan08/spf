@@ -83,6 +83,8 @@ struct tunl_backend {
 	uint32_t		active_conns;
 	uint64_t		total_conns;
 	bool			healthy;	/* for TUI display */
+	uint32_t		last_rtt_ms;
+	uint64_t		last_check_ms;
 };
 
 /*
@@ -138,6 +140,7 @@ struct tunl_state {
 	uint16_t		ctrl_port;
 	uint16_t		metrics_port;
 	tunl_log_level_t	log_level;
+	bool			log_json;
 	char			token[TUNL_TOKEN_MAX];
 };
 
