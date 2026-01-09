@@ -323,6 +323,17 @@ int check_connectivity(const char *hostname, int port)
 				freeaddrinfo(res2);
 			}
 		}
+
+		/* External port reachability check */
+		if (port > 0) {
+			printf("\n5. External reachability check:\n");
+			total++;
+			if (check_port_reachable(hostname, port, AF_INET) == 0) {
+				score++;
+			} else {
+				printf("  ✗ Port %d not reachable externally\n", port);
+			}
+		}
 	}
 
 	/* Summary */

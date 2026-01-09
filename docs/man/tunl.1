@@ -1,4 +1,4 @@
-.TH TUNL 1 "December 2024" "tunl 2.0.0" "User Commands"
+.TH TUNL 1 "January 2026" "tunl 2.0.0" "User Commands"
 .SH NAME
 tunl \- IPv6-first self-hosting toolkit
 .SH SYNOPSIS
@@ -119,6 +119,22 @@ Launch dashboard:
 .RS
 tunl tui
 .RE
+.SH METRICS
+.B tunl
+exposes Prometheus-compatible metrics on the configured metrics port (default: 9100).
+Metrics include:
+.IP \(bu 2
+.B tunl_sessions_active
+\- current active sessions
+.IP \(bu 2
+.B tunl_connections_total
+\- total connections accepted
+.IP \(bu 2
+.B tunl_bytes_in / tunl_bytes_out
+\- traffic counters
+.IP \(bu 2
+.B tunl_backend_health
+\- backend health status (1=up, 0=down)
 .SH FILES
 .TP
 .I /etc/tunl.conf
@@ -129,6 +145,33 @@ Certificate storage directory.
 .TP
 .I /var/lib/tunl/account.key
 ACME account key.
+.SH CONFIGURATION FILE
+The configuration file uses INI format with the following sections:
+.TP
+.B [admin]
+Control interface settings: bind, port, token
+.TP
+.B [metrics]
+Metrics endpoint settings: port
+.TP
+.B [rule.N]
+Forwarding rules where N is a unique identifier.
+Keys: listen, backend (can be repeated), lb (rr|lc|ip), max_conns, proto (tcp|udp)
+.PP
+Example:
+.nf
+[admin]
+bind = ::1
+port = 8081
+token = secret
+
+[rule.1]
+listen = 8080
+backend = localhost:3000
+backend = localhost:3001
+lb = rr
+max_conns = 512
+.fi
 .SH SIGNALS
 .TP
 .B SIGINT, SIGTERM

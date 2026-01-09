@@ -691,12 +691,32 @@ static void handle_ctrl(int fd)
 					rem -= (size_t)w;
 				}
 			}
+		} else if (strcmp(buf, "HEALTH") == 0) {
+			char *p = resp;
+			size_t rem = sizeof(resp);
+
+			for (int i = 0; i < TUNL_MAX_RULES && rem > 100; i++) {
+				if (!g_state.rules[i].enabled)
+					continue;
+				struct tunl_rule *r = &g_state.rules[i];
+				for (int b = 0; b < r->backend_count && rem > 100; b++) {
+					struct tunl_backend *be = &r->backends[b];
+					int w = snprintf(p, rem, "%s:%u %s (rtt: %ums, conns: %u)\n",
+							 be->host, be->port,
+							 be->state == TUNL_BACKEND_UP ? "UP" : "DOWN",
+							 be->last_rtt_ms, be->active_conns);
+					if (w > 0 && (size_t)w < rem) {
+						p += w;
+						rem -= (size_t)w;
+					}
+				}
+			}
 		} else if (strcmp(buf, "SHUTDOWN") == 0) {
 			g_shutdown = 1;
 			snprintf(resp, sizeof(resp), "OK\n");
 		} else {
 			snprintf(resp, sizeof(resp),
-				 "commands: STATUS, RULES, QUIT, SHUTDOWN\n");
+				 "commands: STATUS, RULES, HEALTH, QUIT, SHUTDOWN\n");
 		}
 
 		ctrl_send(fd, resp);

@@ -387,7 +387,7 @@ int dns_init(const char *provider, const char *hostname, const char *token)
 		strncpy(g_dns_config.zone, dot + 1, sizeof(g_dns_config.zone) - 1);
 	}
 
-	if (strcmp(provider, "cloudflare") == 0) {
+	if (strcmp(provider, "cloudflare") == 0 || strcmp(provider, "cf") == 0) {
 		g_dns_config.provider = DNS_PROVIDER_CLOUDFLARE;
 		
 		/* Token format: "token:zone_id" */

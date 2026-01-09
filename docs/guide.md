@@ -76,6 +76,7 @@ nc localhost 8081
 |---------|-------------|
 | `STATUS` | Show uptime, connections, bytes |
 | `RULES` | List active rules |
+| `HEALTH` | Show backend health status |
 | `SHUTDOWN` | Stop the server |
 | `QUIT` | Disconnect |
 | `AUTH <token>` | Authenticate (if token set) |

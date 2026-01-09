@@ -109,7 +109,9 @@ cleanup:
 
 /*
  * Generate CSR (Certificate Signing Request)
+ * Reserved for future use when implementing native ACME protocol
  */
+__attribute__((unused))
 static int acme_generate_csr(const char *domain, const char *key_path,
 			     char *csr_b64, size_t csr_len)
 {
@@ -178,6 +180,8 @@ static int acme_request_cert_acmesh(const char *domain, const char *email,
 {
 	char cmd[2048];
 	int ret;
+	const char *email_opt = "";
+	char email_buf[300] = "";
 
 	/* Check if acme.sh is installed */
 	if (system("which acme.sh >/dev/null 2>&1") != 0) {
@@ -191,11 +195,17 @@ static int acme_request_cert_acmesh(const char *domain, const char *email,
 		}
 	}
 
+	/* Build email option if provided */
+	if (email && email[0]) {
+		snprintf(email_buf, sizeof(email_buf), "--accountemail %s", email);
+		email_opt = email_buf;
+	}
+
 	/* Issue certificate using standalone mode (HTTP-01) */
 	snprintf(cmd, sizeof(cmd),
 		 "~/.acme.sh/acme.sh --issue -d %s --standalone "
 		 "--httpport %d "
-		 "%s "
+		 "%s %s "
 		 "--cert-file %s.crt "
 		 "--key-file %s.key "
 		 "--fullchain-file %s "
@@ -203,6 +213,7 @@ static int acme_request_cert_acmesh(const char *domain, const char *email,
 		 domain,
 		 g_acme.http_challenge_port ? g_acme.http_challenge_port : 80,
 		 g_acme.use_staging ? "--staging" : "",
+		 email_opt,
 		 key_path, key_path, cert_path);
 
 	tunl_log(TUNL_LOG_INFO, "acme: requesting certificate for %s", domain);
